@@ -1,0 +1,37 @@
+{
+    "files.associations": {
+        "replay_fadc.C": "cpp"
+    },
+    "cmake.configureOnOpen": false,
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.sourceDirectory": "${workspaceFolder}",
+    "cmake.installPrefix": "${workspaceFolder}/../moller-counting-install",
+    "cmake.preferredGenerators": [
+        "Unix Makefiles"
+    ],
+    "cmake.ctest.enabled": false,
+    "cmake.environment": {
+        "ANALYZER": "/home/lasitha/MyFiles/Analyzer/analyzer-install",
+        "ROOTSYS": "/opt/root-cxx20/install",
+        "CMAKE_PREFIX_PATH": "/opt/root-cxx20/install:/home/lasitha/MyFiles/Analyzer/analyzer-install",
+        "LD_LIBRARY_PATH": "/opt/root-cxx20/install/lib:/home/lasitha/MyFiles/Analyzer/analyzer-install/lib"
+    },
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.codeAnalysis.enabled": true,
+    "C_Cpp.codeAnalysis.runAutomatically": false,
+    "files.exclude": {
+        "**/.cmake": true,
+        "**/CMakeFiles": true,
+        "build/**": false
+    },
+    "files.watcherExclude": {
+        "**/build": true,
+        "**/.cmake": true
+    },
+    "[cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": false
+    },
+    "editor.formatOnSave": false
+}

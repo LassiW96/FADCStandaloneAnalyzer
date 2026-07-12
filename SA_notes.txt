@@ -1,0 +1,205 @@
+Standalone Analysis of MOLLER Data:
+
+Standalone code piece has been imported from hcana and added in the
+beginning of the MOLLERGenericDetector class. 
+
+SetSampIntTimePedestalPeakStandalone is the relevent pulse selection
+method. Lines 94 - 262.
+
+Arguments that are taken in to the functions:
+    const std::vector<Double_t>& samples (the raw digitized waveform, time ordered ADC counts),
+    Int_t fNPedestalSamples (# of leading samples to estimate pedestal),
+    Double_t fSampThreshold (pulse detection threshold value),
+    Int_t fNSB (# of samps before thrsh crossing to include in the integral),
+    Int_t fNSA (# of samps after thrsh),
+    Int_t fNSAT (# of consecutive samps after thrsh crossing to consider as a good pulse),
+    Int_t fMaxNPulses (Maximum allowed # of pulses per waveform)
+
+106 - 113:
+    Just assigning size of the variables in the "data" struct with 
+    "fMaxNPulses" number of zeroes. 
+
+fNSamples is the size of the samples vector. 
+
+117 - 131:
+    Three lambda functions (anonymous inline function).
+    GetIntegral : Calculates the sum/integral of samples in a given range.
+    GetSampleRaw : Gets the raw sample value at a given index.
+    GetSample : Gets the pedestal subtracted sample value at a given index.
+
+"data" is the member of the MOLLERTHcSampData struct.
+fHasMulti (boolian for has multiple hits I guess), is already assigned
+to kFALSE in the beginning. This is turned to kTRUE in line 133.
+
+fSampPed is the sum of the first fNPedestalSamples to the samples, 
+calculated using GetIntegral lambda. Line 134. This is not the exact pedestal 
+value; this is just the integral/sum of ped samples. You have to scale it to 
+subtract from the pulse value.
+
+NS (# of total samples to calculate the ped I guess) is then adjusted to 
+fNPedestalSamples - 1.
+
+## -1s and +1s are because array indexing in c++ (arrays start at 0)
+
+fNSampPulses is the number of sampled pulses in the waveform.
+
+Lines 139 - 145: case if fSampThreshold == 0. 
+    Abandons threshold crossing algorithm and assume there is a pulse right after
+    NS and force integrate.
+    Total window is integrated. 
+    To get the fSampPulseInt (pulse integral I guess), sample is integrated from,
+    (NS - fNSB) to the which ever minimum of (NS to fNSA -1) or the size of the sample
+    vector.
+
+    fNPeakSamples is the # of samples corresponding to the pulse peak.
+    # of samples ended up inside the integration window. 
+
+    fPeakPedestalRatio is the ratio btwn # of peak samples (as in the above) and
+    the # of pedestal samples. 
+
+    Then the pedestal substracted pulse integral.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+====================================================================================
+Relevent other info:
+The Standalone Analizer should be;
+No Framework Dependencies: There are no framework-specific objects being passed in 
+(e.g., no EventContext& event, no GeometryManager* geo, no RunDatabase& db).
+
+Primitive Inputs: It relies only on standard C++ containers (std::vector) and primitive 
+data types (using ROOT's Double_t and Int_t).
+
+Injected Configuration: Instead of the function querying a database or an XML file to 
+find out what the threshold (fSampThreshold) or integration window (fNSA, fNSB) should be, 
+those values are passed directly as arguments.
+
+Agnostic Output: It stores the results in a simple custom data structure (likely a 
+struct containing integral, peak_time, pedestal_mean, etc.) rather than writing directly 
+to a framework-specific output tree or event bus.
+
+
+Create a separate class for the SA. 
+Function output:
+Keep all the required outputs in a separate struct. Do not return any root specific objs.
+Keep it pure C++. Include this in the SA header. standalone algorithm should simply return 
+a std::vector<FADCPulse>. If no pulses are found, it returns an empty vector.
+Following are the already existing vars:
+  std::vector<Double_t> fSampPulseInt;
+  std::vector<Double_t> fSampPulseAmp;
+  std::vector<Double_t> fSampPulseTime;
+  std::vector<Double_t> fSampPulseIntPedSub;
+  std::vector<Double_t> fSampPulseIntMOLLERRaw;
+  std::vector<Double_t> fSampPulseIntMOLLERVal;
+  std::vector<Double_t> fSampPulseTOT;
+  std::vector<Int_t>    fSampPulsePileup;
+
+Arguments and consts:
+Currently there are 7 arguments and 4 calibration constants are passed. 
+11 function inputs can be messy so create separate structs for those two 
+in the class header(*). 
+struct FADCConfig; struct FADCCalib.
+
+
+
+Catch2 compilation:
+g++ -std=c++17 test_main.cxx test_waveformanalyzer.cxx FADCStandaloneAnalyzer.cxx -lCatch2Main -lCatch2 $(root-config --cflags --libs) -o run_tests 
+&& ./run_tests
+
+
+07/06/2026 Questions:
+    - How many instances of this class will be created? 
+        Per channel basis O(1000)
+        Per module basis O(100) 
+        Per crate basis O(10) 
+        Or a single object for all
+
+    - How to do the configuration data differ? 
+        Some parameters, perhaps "gain" and "tcal", may vary from channel to channel, 
+        others, like pC_Conv, are most likely fixed for each module type, 
+        and things like fNSA,  fNSB, etc., are set by the user, through the database, at the start of the 
+        analysis as the preferred waveform analysis parameters and so they are probably 
+        identical for all modules of a given type, too
+    
+    - How to properly implement the class in each different bases?
+        Per channel basis - prolly won't have to worry about configurations. They'll be set
+        at each instance of the class. But there will be too many duplications of
+        configuration data -- this could be a problem. 
+
+        So how to change this for per module base?
+
+
+07/07/2026 more information:
+    - There is no fixed number of FADC modules per THaDetector (per detector db file).
+        A set of scintillators can have just one FADC module.
+        A set of cerenkov detectors can have ~50 FADC modules.
+        Each of these would have one db file.
+
+    - Ultimately, waveform analysis routine will be configured and called as a part of the 
+    class Ole is writting -- FADC250 channel data class. 
+
+    - The goal, for now, is to get the FADC waveform analysis to work in a "standalone" fashion, 
+    outside of any specific detector classes.
+
+
+07/08/2026 more tests:
+    - Need to write more test cases for multiple waveforms, puleups, etc. and more cases you can
+    think of to crash proof this. 
+
+    - How to use a generator (motecarlo like) to generate waveforms instead of hard-coding them?
+
+    - Main analysis function return value: No need of a vector of FADCPulse (there are vectors inside 
+    of this struct to hold multiple waveform data). So think how to change this. 
+
+
+07/09/2026 info:
+    - Waveform generators done. Need to write integral calculations and amp calculation.
+    Also, need to think about pileups. 
+
+    - Main analysis function return value fixed. 
+
+    - Now write test cases. 
+
+    - Need to check the pulse finding algorithm with the FADC firmware manual.
+
+
+07/10/2026:
+    - Single pulse generator and it's intergral calculator works fine. Also, catch2 tests using
+    those, work fine. 
+
+    - Need to write tests for multiple pulse generator.
+    
+    - Need to write functions for other variable calculations which are necessary for
+    testing.
+
+    - Cleanup the python script.
+
+
+07/11/2026 notes:
+    - Test case for multiple pulses works fine. Need to add more tests. Right now, it only checks pulse integral.
+
+    - Python script cleaned up.
+
+
+07/12/2026 notes:
+    - New test cases - pulse amplitude and pulse time calculations - added to the waveformGenerator class
+    and to the test script.
