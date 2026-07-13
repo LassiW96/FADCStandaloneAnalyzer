@@ -3,14 +3,15 @@
 #include "RtypesCore.h"
 #include <vector>
 
-waveformGenerator::waveformGenerator() {gRandom->SetSeed(0);}
+waveformGenerator::waveformGenerator() : fRng(std::random_device{}()) {}
 
 std::vector<Int_t> waveformGenerator::noiseWaveform() const {
     int min = fWaveformData.Pedestal - fWaveformData.PedRange / 2;
     int max = fWaveformData.Pedestal + fWaveformData.PedRange / 2 + 1;
+    std::uniform_real_distribution<double> rndm(0.0, 1.0);
     std::vector<Int_t> wave;
     for( int i = 0; i < fWaveformData.TotNSamples; i++ ) {
-    wave.push_back(min + (max - min) * gRandom->Rndm());
+    wave.push_back(min + (max - min) * rndm(fRng));
     }
     return wave;
 }
@@ -18,17 +19,18 @@ std::vector<Int_t> waveformGenerator::noiseWaveform() const {
 std::vector<Int_t> waveformGenerator::singlePulseWaveform() const {
     int min_ped = fWaveformData.Pedestal - fWaveformData.PedRange / 2;
     int max_ped = fWaveformData.Pedestal + fWaveformData.PedRange / 2 + 1;
+    std::uniform_real_distribution<double> rndm(0.0, 1.0);
     std::vector<Int_t> wave;
 
     int pulse_min = fWaveformData.InitPedSamples;
     int pulse_max = fWaveformData.TotNSamples - 1;
-    int random_idx = pulse_min + int(pulse_max - pulse_min) * gRandom->Rndm();
+    int random_idx = pulse_min + int(pulse_max - pulse_min) * rndm(fRng);
     for( int i = 0; i < fWaveformData.TotNSamples; i++ ) {
         if(i >= random_idx && i < random_idx + fWaveformData.PulseWidth) {
             int j = i - random_idx;
             wave.push_back(min_ped + fWaveformData.PulseAmp/TMath::Power(2, j));
         } else {
-            wave.push_back(min_ped + (max_ped - min_ped) * gRandom->Rndm());
+            wave.push_back(min_ped + (max_ped - min_ped) * rndm(fRng));
         }
     }
     return wave;
@@ -37,10 +39,11 @@ std::vector<Int_t> waveformGenerator::singlePulseWaveform() const {
 std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
     int min_ped = fWaveformData.Pedestal - fWaveformData.PedRange / 2;
     int max_ped = fWaveformData.Pedestal + fWaveformData.PedRange / 2 + 1;
+    std::uniform_real_distribution<double> rndm(0.0, 1.0);
     std::vector<Int_t> wave;
     std::vector<std::pair<Int_t, Int_t>> pulse_info;
 
-    int num_pulses = 2 + int((fWaveformData.NPulses - 2) * gRandom->Rndm());
+    int num_pulses = 2 + int((fWaveformData.NPulses - 2) * rndm(fRng));
 
     // Maximum pulse space required
     int max_space = (num_pulses * fWaveformData.PulseWidth) + 
@@ -55,17 +58,17 @@ std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
 
     // Current starting point
     int current_start = fWaveformData.InitPedSamples + 
-                    int((max_first_start - fWaveformData.InitPedSamples) * gRandom->Rndm());
+                    int((max_first_start - fWaveformData.InitPedSamples) * rndm(fRng));
 
     // Random amps and separations
     for(int p = 0; p < num_pulses; p++) {
     int min_amp = fWaveformData.PulseAmp / 2;
-    int current_amp = min_amp + int((fWaveformData.PulseAmp - min_amp) * gRandom->Rndm());
+    int current_amp = min_amp + int((fWaveformData.PulseAmp - min_amp) * rndm(fRng));
 
     pulse_info.push_back({current_start, current_amp});
 
     int current_separation = fWaveformData.PulseSeparation / 2 + 
-                                int((fWaveformData.PulseSeparation - fWaveformData.PulseSeparation / 2) * gRandom->Rndm());
+                                int((fWaveformData.PulseSeparation - fWaveformData.PulseSeparation / 2.) * rndm(fRng));
     current_start += fWaveformData.PulseWidth + current_separation;
     }
 
@@ -86,7 +89,7 @@ std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
     if(in_pulse) {
         wave.push_back(min_ped + active_amp/TMath::Power(2, pulse_relative_idx));
     } else {
-        wave.push_back(min_ped + (max_ped - min_ped) * gRandom->Rndm());
+        wave.push_back(min_ped + (max_ped - min_ped) * rndm(fRng));
     }
     }
     return wave;
@@ -147,10 +150,12 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
     std::vector<Int_t> AvgIntegrals = {};
 
     // Pedestal: raw sum of first NPedSamps samples (matches analyzer's fSampPed)
-    Int_t PedSum = 0;
+    Double_t PedSum = 0.0;
     for (int i = 0; i < NPedSamps; i++)
         PedSum += wave[i];
-    Int_t AvgPed = PedSum / NPedSamps;
+    // Use the same formula as the analyzer:
+    //   AvgPed (float) = PedSum / NPedSamps  — NOT integer division
+    Double_t AvgPed = PedSum / NPedSamps;
 
     Bool_t PulseFound = false;
 
@@ -164,12 +169,13 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
                 //   PedSubInt = RawInt - PedSum * (window_width / NPedSamps)
                 //             = RawInt - AvgPed * window_width
                 Int_t WindowWidth = hi - lo + 1;
-                Int_t AvgIntegral = 0;
+                Double_t AvgIntegral = 0.0;
                 Int_t RawIntegral = 0;
                 for (int j = lo; j <= hi; j++) {
                     RawIntegral += wave[j];
                 }
-                AvgIntegral = RawIntegral - AvgPed * WindowWidth;
+                // Match analyzer: PedSubInt = RawInt - PedSum * (WindowWidth / NPedSamps)
+                AvgIntegral = RawIntegral - PedSum * (static_cast<Double_t>(WindowWidth) / NPedSamps);
                 PulseFound = true;
                 fWaveformInfo.PedSubIntegral.push_back(AvgIntegral);
 

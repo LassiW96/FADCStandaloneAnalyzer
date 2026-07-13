@@ -3,7 +3,6 @@
 
 #include <vector>
 #include <random>
-#include <TRandom.h>
 #include "Rtypes.h"
 #include "RtypesCore.h"
 #include "TMath.h"
@@ -24,9 +23,9 @@ struct WaveformData {
 };
 
 struct WaveformInfo {
-    std::vector<Int_t> PedSubIntegral;
-    std::vector<Int_t> PulseAmp;
-    std::vector<Int_t> PulseTime;
+    std::vector<Double_t> PedSubIntegral; // Double to match analyzer's floating-point formula
+    std::vector<Int_t>    PulseAmp;
+    std::vector<Int_t>    PulseTime;
 };
 
 class waveformGenerator {
@@ -56,6 +55,9 @@ class waveformGenerator {
         WaveformInfo fWaveformInfo;
 
         FADCStandaloneAnalyzer saAnalyzer;
+
+        // Per-instance RNG — thread-safe (no shared global state)
+        mutable std::mt19937 fRng;
 };
 
 #endif // WAVEFORMGENERATOR_H
