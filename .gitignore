@@ -1,0 +1,9 @@
+.vscode/
+.clangd
+/MOLLERGenericDetector_SA.cxx
+/MOLLERGenericDetector_SA.h
+/multithread_tests
+/test_multithreaded.cxx
+/run_tests
+/waveform
+/SA_notes.txt

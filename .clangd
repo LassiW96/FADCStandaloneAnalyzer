@@ -1,7 +1,0 @@
-CompileFlags:
-  Add:
-    - -I/opt/root/include
-    - -I/usr/include
-    - -I/usr/local/include
-    - -I/home/lasitha/MyFiles/Analyzer/analyzer-dev/install/include
-    - -I/home/lasitha/MyFiles/Analyzer/analyzer-dev/source
