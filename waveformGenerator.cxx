@@ -1,6 +1,9 @@
 #include "waveformGenerator.h"
 #include "FADCStandaloneAnalyzer.h"
 #include "RtypesCore.h"
+#include <algorithm>
+#include <cmath>
+#include <random>
 #include <vector>
 
 waveformGenerator::waveformGenerator() : fRng(std::random_device{}()) {}
@@ -95,50 +98,6 @@ std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
     return wave;
 }
 
-// std::vector<Int_t> waveformGenerator::calcPulseIntegral(const std::vector<Int_t> wave) const {
-//     FADCConfig fConfig = saAnalyzer.getConfig();
-//     Int_t NPedSamps = fConfig.fNPedestalSamples;
-//     Int_t NSB       = fConfig.fNSB;
-//     Int_t NSA       = fConfig.fNSA;
-//     Int_t Threshold = fConfig.fSampThreshold;
-//     Int_t NSamples  = (Int_t)wave.size();
-
-//     std::vector<Int_t> AvgIntegrals = {};
-
-//     // Pedestal: raw sum of first NPedSamps samples (matches analyzer's fSampPed)
-//     Int_t PedSum = 0;
-//     for (int i = 0; i < NPedSamps; i++)
-//         PedSum += wave[i];
-//     Int_t AvgPed = PedSum / NPedSamps;
-
-//     Bool_t PulseFound = false;
-
-//     for(int i = 0; i < wave.size(); i++) {
-//         if(wave[i] - AvgPed > Threshold) {
-//             if(!PulseFound) {
-//                 // Integration window: [FirstSamp - NSB, FirstSamp + NSA - 1], clamped to valid range
-//                 Int_t lo = TMath::Max(i - NSB, 0);
-//                 Int_t hi = TMath::Min(i + NSA - 1, NSamples - 1);
-//                 // Pedestal-subtracted integral, using the same formula as the analyzer:
-//                 //   PedSubInt = RawInt - PedSum * (window_width / NPedSamps)
-//                 //             = RawInt - AvgPed * window_width
-//                 Int_t WindowWidth = hi - lo + 1;
-//                 Int_t AvgIntegral = 0;
-//                 Int_t RawIntegral = 0;
-//                 for (int j = lo; j <= hi; j++) {
-//                     RawIntegral += wave[j];
-//                 }
-//                 AvgIntegral = RawIntegral - AvgPed * WindowWidth;
-//                 PulseFound = true;
-//                 AvgIntegrals.push_back(AvgIntegral);
-//             }
-//         } else {
-//             PulseFound = false;
-//         }
-//     }
-//     return AvgIntegrals;
-// }
-
 void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
     FADCConfig fConfig = saAnalyzer.getConfig();
     Int_t NPedSamps = fConfig.fNPedestalSamples;
@@ -215,4 +174,75 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
             PulseFound = false;
         }
     }
+}
+
+// Waveform generator v2 related functions - now the parameters are read from the object state
+Double_t waveformGenerator::spePulse(Double_t t, Double_t t0, Double_t amp) const {
+    if(t < t0) return 0.0;
+    return amp * (std::exp(-(t - t0) / fWf.tau_f) - std::exp(-(t - t0) / fWf.tau_r));
+}
+
+std::vector<Double_t> waveformGenerator::generatePETimes() const {
+    // Distributions for event and after pulse gen
+    std::uniform_int_distribution<Int_t> num_pulses_dist(1, fDaq.max_n_pulses);
+    std::uniform_real_distribution<Double_t> window_dist(10.0, fDaq.num_samples * fDaq.sample_rate - 50.0);
+    std::poisson_distribution<Int_t> pe_per_hit_dist(15); // Avg 15 primary PEs per hit
+    std::uniform_real_distribution<Double_t> ap_chance(0.0, 1.0); // Prob for after pulse
+    std::normal_distribution<Double_t> ap_time_dist(fWf.ap_delay_mean, fWf.ap_delay_sigma);
+
+    std::vector<Double_t> all_pe_times;
+    Int_t num_pulses = num_pulses_dist(fRng);
+
+    for (Int_t p = 0; p < num_pulses; p++) {
+        Double_t hit_time = window_dist(fRng);
+        Int_t num_pes = pe_per_hit_dist(fRng);
+
+        for (Int_t i = 0; i < num_pes; i++) {
+            all_pe_times.push_back(hit_time);
+
+            // After pulse probability roll
+            if(ap_chance(fRng) < fWf.ap_prob) {
+                Double_t delayed_time = hit_time + ap_time_dist(fRng);
+                all_pe_times.push_back(delayed_time);
+            }
+        }
+    }
+    // Sort the PE times
+    std::sort(all_pe_times.begin(), all_pe_times.end());
+    return all_pe_times;
+}
+
+std::vector<Int_t> waveformGenerator::generateWaveform() const {
+    std::vector<Double_t> pe_times = generatePETimes();
+
+    // Distributions
+    std::normal_distribution<Double_t> tts_dist(0.0, fWf.tts_sigma);
+    std::normal_distribution<Double_t> gain_dist(fWf.mean_gain, fWf.gain_sigma);
+    std::normal_distribution<Double_t> noise_dist(0.0, fDaq.noise_sigma);
+
+    std::vector<Double_t> analog_wf(fDaq.num_samples, 0.0);
+
+    for(Double_t true_times : pe_times) {
+        Double_t smeared_time = true_times + tts_dist(fRng);
+        Double_t smeared_gain = gain_dist(fRng);
+        if(smeared_gain < 0.0) smeared_gain = 0.0;
+
+        for(Int_t i = 0; i < fDaq.num_samples; i++) {
+            Double_t current_time = i * fDaq.sample_rate;
+            // Optimization
+            if(current_time > smeared_time - 5.0 && current_time < smeared_time + 50) {
+                analog_wf[i] += spePulse(current_time, smeared_time, smeared_gain);
+            }
+        }
+    }
+
+    // Add noise and digitize
+    std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
+    for(Int_t i = 0; i < fDaq.num_samples; i++) {
+        Double_t noisy_voilage = analog_wf[i] + noise_dist(fRng);
+        Int_t adc_count = static_cast<Int_t>(std::floor(noisy_voilage/fDaq.v_lsb) + fDaq.pedestal);
+        adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
+        adc_wf[i] = adc_count;
+    }
+    return adc_wf;
 }
