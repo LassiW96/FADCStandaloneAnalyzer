@@ -8,20 +8,6 @@
 #include "TMath.h"
 
 #include "FADCStandaloneAnalyzer.h"
-
-// struct WaveformData {
-//     Int_t TotNSamples;          // In daq params - num_samples
-//     Int_t InitPedSamples;       // New
-
-//     Int_t Pedestal;             // In daq params - pedestal
-//     Int_t PedRange;             // Maybe daq noise_sigma can be used?
-
-//     Int_t NPulses;              // in daq params - max_n_pulses
-//     Int_t PulseAmp;             // Maybe wf params mean_gain can be used?
-//     Int_t PulseWidth;           // New
-//     Int_t PulseSeparation;      // New
-// };
-
 struct DigitizerParams {
     Double_t sample_rate = 4.0;      // Sampling rate of the digitizer (250 MHz)
     Int_t num_samples = 256;         // #of samples in the sampling window
@@ -81,10 +67,13 @@ class waveformGenerator_v2 {
 
         // Generator v2
         std::vector<Int_t> generateWaveform() const;
+        std::vector<Int_t> squareWaveform() const;
+        std::vector<Int_t> triangleWaveform() const;
 
         // Calc pulse parameters
         //std::vector<Int_t> calcPulseIntegral(const std::vector<Int_t> wave) const;
         void calcPulseParameters(const std::vector<Int_t> wave);
+        void simpleParameterCalc(const std::vector<Int_t> wave);
 
         // Accessors for pulse parameters computed by calcPulseParameters()
         const WaveformInfo& getWaveformInfo() const { return fWaveformInfo; }
@@ -104,8 +93,10 @@ class waveformGenerator_v2 {
         mutable std::mt19937 fRng;
 
         // Helpers for waveform generator v2
-        // SPE template
+        // Waveform templates
         Double_t spePulse(Double_t t, Double_t t0, Double_t amp) const;
+        Double_t squarePulse(Double_t t, Double_t t0, Double_t amp) const;
+        Double_t trianglePulse(Double_t t, Double_t t0, Double_t amp) const;
 
         // Hit times + after pulse generator
         std::vector<Double_t> generatePETimes() const;

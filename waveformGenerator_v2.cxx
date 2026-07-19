@@ -188,10 +188,34 @@ void waveformGenerator_v2::calcPulseParameters(const std::vector<Int_t> wave) {
     }
 }
 
+void waveformGenerator_v2::simpleParameterCalc(const std::vector<Int_t> wave) {
+    // No need of this for now
+}
+
 // Waveform generator v2 related functions - now the parameters are read from the object state
 Double_t waveformGenerator_v2::spePulse(Double_t t, Double_t t0, Double_t amp) const {
     if(t < t0) return 0.0;
     return amp * (std::exp(-(t - t0) / fWf.tau_f) - std::exp(-(t - t0) / fWf.tau_r));
+}
+
+Double_t waveformGenerator_v2::squarePulse(Double_t t, Double_t t0, Double_t amp) const {
+    Double_t width_ns = fWf.pulse_width * fDaq.sample_rate; // Convert samples -> ns
+    if(t < t0 || t > t0 + width_ns) return 0.0;
+    return amp;
+}
+
+Double_t waveformGenerator_v2::trianglePulse(Double_t t, Double_t t0, Double_t amp) const {
+    Double_t width_ns = fWf.pulse_width * fDaq.sample_rate;
+    Int_t dt = fDaq.sample_rate;
+    t0 = round(t0 / dt) * dt;
+    Double_t half_w = width_ns / 2.0;
+    if(t < t0 - half_w || t > t0 + half_w) return 0.0;
+
+    if(t < t0) {
+        return amp * (t - (t0 - half_w)) / (half_w);
+    } else {
+        return amp * ((t0 + half_w) - t) / (half_w);
+    }
 }
 
 std::vector<Double_t> waveformGenerator_v2::generatePETimes() const {
@@ -253,6 +277,56 @@ std::vector<Int_t> waveformGenerator_v2::generateWaveform() const {
     for(Int_t i = 0; i < fDaq.num_samples; i++) {
         Double_t noisy_voilage = analog_wf[i] + noise_dist(fRng);
         Int_t adc_count = static_cast<Int_t>(std::floor(noisy_voilage/fDaq.v_lsb) + fDaq.pedestal);
+        adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
+        adc_wf[i] = adc_count;
+    }
+    return adc_wf;
+}
+
+std::vector<Int_t> waveformGenerator_v2::squareWaveform() const {
+    std::vector<Double_t> pe_times = generatePETimes();
+
+    std::vector<Double_t> square_wf(fDaq.num_samples, 0.0);
+
+    for(Double_t true_times : pe_times) {
+        for(Int_t i = 0; i < fDaq.num_samples; i++) {
+            Double_t current_time = i * fDaq.sample_rate;
+            // Optimization
+            if(current_time > true_times - 5.0 && current_time < true_times + 50) {
+                square_wf[i] += squarePulse(current_time, true_times, fWf.mean_gain);
+            }
+        }
+    }
+
+    // Digitize
+    std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
+    for(Int_t i = 0; i < fDaq.num_samples; i++) {
+        Int_t adc_count = static_cast<Int_t>(std::floor(square_wf[i]/fDaq.v_lsb) + fDaq.pedestal);
+        adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
+        adc_wf[i] = adc_count;
+    }
+    return adc_wf;
+}
+
+std::vector<Int_t> waveformGenerator_v2::triangleWaveform() const {
+    std::vector<Double_t> pe_times = generatePETimes();
+
+    std::vector<Double_t> square_wf(fDaq.num_samples, 0.0);
+
+    for(Double_t true_times : pe_times) {
+        for(Int_t i = 0; i < fDaq.num_samples; i++) {
+            Double_t current_time = i * fDaq.sample_rate;
+            // Optimization
+            if(current_time > true_times - 5.0 && current_time < true_times + 50) {
+                square_wf[i] += trianglePulse(current_time, true_times, fWf.mean_gain);
+            }
+        }
+    }
+
+    // Digitize
+    std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
+    for(Int_t i = 0; i < fDaq.num_samples; i++) {
+        Int_t adc_count = static_cast<Int_t>(std::floor(square_wf[i]/fDaq.v_lsb) + fDaq.pedestal);
         adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
         adc_wf[i] = adc_count;
     }
