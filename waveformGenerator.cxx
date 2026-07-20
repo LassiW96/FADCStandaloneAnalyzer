@@ -106,6 +106,8 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
     Int_t Threshold = fConfig.fSampThreshold;
     Int_t NSamples  = (Int_t)wave.size();
 
+    Int_t PedFromDaq = fDaq.pedestal;
+
     std::vector<Int_t> AvgIntegrals = {};
 
     // Pedestal: raw sum of first NPedSamps samples (matches analyzer's fSampPed)
@@ -122,12 +124,16 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
         PedSumLastFour += wave[i];
     }
     
-    if(PedSumLastFour < PedSum) {
-        AvgPed = PedSumLastFour / NPedSamps;
-    } else {
-        AvgPed = PedSum / NPedSamps;
-    }
-
+    if((PedSum < (PedFromDaq + 8) * 4 && PedSum > (PedFromDaq - 8) * 4) &&
+        (PedSumLastFour < (PedFromDaq + 8) * 4 && PedSumLastFour > (PedFromDaq - 8) * 4)) {
+            if(PedSumLastFour < PedSum) {
+                AvgPed = PedSumLastFour / NPedSamps;
+            } else {
+                AvgPed = PedSum / NPedSamps;
+            }
+        }
+    else AvgPed = PedFromDaq;
+    
     Bool_t PulseFound = false;
 
     for(int i = 0; i < wave.size(); i++) {
@@ -146,7 +152,7 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
                     RawIntegral += wave[j];
                 }
                 // Match analyzer: PedSubInt = RawInt - PedSum * (WindowWidth / NPedSamps)
-                AvgIntegral = RawIntegral - PedSum * (static_cast<Double_t>(WindowWidth) / NPedSamps);
+                AvgIntegral = RawIntegral - AvgPed * static_cast<Double_t>(WindowWidth);
                 PulseFound = true;
                 fWaveformInfo.PedSubIntegral.push_back(AvgIntegral);
 
@@ -224,7 +230,7 @@ std::vector<Double_t> waveformGenerator::generatePETimes() const {
     std::uniform_real_distribution<Double_t> window_dist(10.0, fDaq.num_samples * fDaq.sample_rate - 50.0);
     std::poisson_distribution<Int_t> pe_per_hit_dist(15); // Avg 15 primary PEs per hit
     std::uniform_real_distribution<Double_t> ap_chance(0.0, 1.0); // Prob for after pulse
-    std::normal_distribution<Double_t> ap_time_dist(fWf.ap_delay_mean, fWf.ap_delay_sigma);
+    std::normal_distribution<Double_t> ap_time_dist(fWf.ap_delay_mean, fWf.ap_delay_sigma); // After pulse time dist
 
     std::vector<Double_t> all_pe_times;
     Int_t num_pulses = num_pulses_dist(fRng);

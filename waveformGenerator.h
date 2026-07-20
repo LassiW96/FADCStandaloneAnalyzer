@@ -27,7 +27,7 @@ struct WaveformParams {
     Double_t tau_r = 2.0;           // Rise time (ns)
     Double_t tau_f = 10.0;          // Decay time (ns)
     Double_t tts_sigma = 1.5;       // Transit time spread (ns)
-    Double_t mean_gain = 5.0;       // Mean amplitude per PE (mV)
+    Double_t mean_gain = 10.0;       // Mean amplitude per PE (mV)
     Double_t gain_sigma = 1.0;      // Gain variation (mV)
 
     // After pulse parameters
