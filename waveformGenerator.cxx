@@ -103,12 +103,20 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
     Int_t NPedSamps = fConfig.fNPedestalSamples;
     Int_t NSB       = fConfig.fNSB;
     Int_t NSA       = fConfig.fNSA;
+    Int_t NSAT      = fConfig.fNSAT;
     Int_t Threshold = fConfig.fSampThreshold;
     Int_t NSamples  = (Int_t)wave.size();
+    Int_t NS = NPedSamps - 1;
 
     Int_t PedFromDaq = fDaq.pedestal;
 
-    std::vector<Int_t> AvgIntegrals = {};
+    auto GetIntegral = [&](Int_t lo, Int_t hi) {
+        Double_t sum = 0.0;
+        lo = TMath::Max(lo, 0);
+        hi = TMath::Min(hi, NSamples - 1);
+        for( Int_t i = lo; i <= hi; i++ ) sum += wave[i];
+        return sum;
+    };
 
     // Pedestal: raw sum of first NPedSamps samples (matches analyzer's fSampPed)
     Double_t AvgPed = 0.0;
@@ -134,63 +142,79 @@ void waveformGenerator::calcPulseParameters(const std::vector<Int_t> wave) {
         }
     else AvgPed = PedFromDaq;
     
-    Bool_t PulseFound = false;
+    //Bool_t PulseFound = false;
+    Int_t NSampPulses = 0;
+    Bool_t CheckSampBelowThres = false;
 
-    for(int i = 0; i < wave.size(); i++) {
-        if(wave[i] - AvgPed > Threshold) {
-            if(!PulseFound) {
-                // Integration window: [FirstSamp - NSB, FirstSamp + NSA - 1], clamped to valid range
-                Int_t lo = TMath::Max(i - NSB, 0);
-                Int_t hi = TMath::Min(i + NSA - 1, NSamples - 1);
-                // Pedestal-subtracted integral, using the same formula as the analyzer:
-                //   PedSubInt = RawInt - PedSum * (window_width / NPedSamps)
-                //             = RawInt - AvgPed * window_width
-                Int_t WindowWidth = hi - lo + 1;
-                Double_t AvgIntegral = 0.0;
-                Int_t RawIntegral = 0;
-                for (int j = lo; j <= hi; j++) {
-                    RawIntegral += wave[j];
-                }
-                // Match analyzer: PedSubInt = RawInt - PedSum * (WindowWidth / NPedSamps)
-                AvgIntegral = RawIntegral - AvgPed * static_cast<Double_t>(WindowWidth);
-                PulseFound = true;
-                fWaveformInfo.PedSubIntegral.push_back(AvgIntegral);
+    std::vector<Int_t> AvgIntegrals = {};
 
-                Int_t  pulse_amp = 0;
-                Int_t pulse_Time = 0;
-
-                Int_t PeakBin = 0;
-                Double_t PeakVal = wave[i] - AvgPed;
-                for( Int_t nt = i + 1; nt < TMath::Min((i + NSA), int(NSamples)); nt++ ) {
-                if( (wave[nt] - AvgPed) < PeakVal && PeakBin == 0 ) {
-                    PeakBin = nt - 1;
-                } else if( PeakBin == 0 ) {
-                    PeakVal = wave[nt] - AvgPed;
-                }
-                }
-                if( PeakBin > 0 ) {
-                pulse_amp = wave[PeakBin];
-                Int_t Time = i * 64;
-                Double_t VMid = (wave[PeakBin] - AvgPed) / 2.;
-                for( Int_t nt = TMath::Max(i - fConfig.fNSB, 0);
-                    nt < TMath::Min(PeakBin, int(NSamples - 1)); nt++ ) {
-                    if( VMid >= (wave[nt] - AvgPed) && VMid < (wave[nt + 1] - AvgPed) ) {
-                    Time = 64 * nt + int(64 * (VMid - (wave[nt] - AvgPed)) /
-                        ((wave[nt + 1] - AvgPed) - (wave[nt] - AvgPed)));
-                    }
-                }
-                pulse_Time = Time;
-                } else {
-                pulse_amp = wave[i];
-                pulse_Time = 64 * i;
-                }
-
-                fWaveformInfo.PulseAmp.push_back(pulse_amp);
-                fWaveformInfo.PulseTime.push_back(pulse_Time);
-            }
-        } else {
-            PulseFound = false;
+    while(NS < int(NSamples) && NSampPulses < fConfig.fMaxNPulses) {
+      if(CheckSampBelowThres) {
+        if( wave[NS] - AvgPed < Threshold ) CheckSampBelowThres = kFALSE;
+      } else {
+        Int_t ns_found = 0;
+        for( Int_t nt = NS; nt < TMath::Min(NS + NSAT, int(NSamples)); nt++) {
+          if( wave[nt] - AvgPed > Threshold) ns_found++;
         }
+        if(ns_found == fConfig.fNSAT) {
+            Int_t lo = TMath::Max(NS - fConfig.fNSB, 0);
+            Int_t hi = TMath::Min(NS + fConfig.fNSA - 1, int(NSamples - 1));
+            Int_t rawInt = GetIntegral(lo, hi);
+            Int_t WindowWidth = hi - lo + 1;
+            fWaveformInfo.PedSubIntegral.push_back(rawInt - AvgPed * WindowWidth);
+          
+          // Peak and time calculation
+          Int_t PeakBin = 0;
+          Double_t PeakVal = wave[NS] - AvgPed;
+          for( Int_t nt = NS + 1; nt < TMath::Min((NS + fConfig.fNSA), int(NSamples)); nt++ ) {
+            if( wave[nt] - AvgPed < PeakVal && PeakBin == 0 ) {
+              PeakBin = nt - 1;
+            } else if( PeakBin == 0 ) {
+              PeakVal = wave[nt] - AvgPed;
+            }
+          }
+          if( PeakBin > 0 ) {
+            fWaveformInfo.PulseAmp.push_back(wave[PeakBin]);
+            Int_t Time = NS * 64;
+            Double_t VMid = (wave[PeakBin] - AvgPed) / 2.;
+            for( Int_t nt = TMath::Max(NS - fConfig.fNSB, 0);
+                nt < TMath::Min(PeakBin, int(NSamples - 1)); nt++ ) {
+              if( VMid >= wave[nt] - AvgPed && VMid < wave[nt + 1] - AvgPed ) {
+                Time = 64 * nt + int(64 * (VMid - (wave[nt] - AvgPed)) /
+                    (wave[nt + 1] - AvgPed - (wave[nt] - AvgPed)));
+              }
+            }
+            fWaveformInfo.PulseTime.push_back(Time);
+          } else {
+            fWaveformInfo.PulseAmp.push_back(wave[NS]);
+            fWaveformInfo.PulseTime.push_back(64 * NS);
+          }
+
+          // Pileup calculations
+        //   Int_t hi = TMath::Min((NS + fConfig.fNSA - 1), int(NSamples - 1));
+        //   Int_t tot = 0;
+        //   for( Int_t nt = NS; nt <= hi; nt++ ) {
+        //     if( wave[nt] - AvgPed > fConfig.fSampThreshold ) tot++;
+        //   }
+        //   fWaveformInfo.PulseTOT.push_back(64.0 * tot);
+
+        //   Int_t pileup = 0;
+        //   for( Int_t nt = NS + 1; nt < hi; nt++ ) {
+        //     if( wave[nt] - AvgPed > fConfig.fSampThreshold &&
+        //         wave[nt] - AvgPed > wave[nt - 1] - AvgPed &&
+        //         wave[nt] - AvgPed > wave[nt + 1] - AvgPed ) {
+        //       pileup = 1;
+        //       break;
+        //     }
+        //   }
+        //   fWaveformInfo.PulsePileup.push_back(pileup);
+
+        NSampPulses++;
+        NS = NS + fConfig.fNSA;
+        CheckSampBelowThres = kTRUE;
+        }
+      }
+      NS++;
     }
 }
 
