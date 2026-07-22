@@ -174,19 +174,25 @@ std::vector<Int_t> waveformGenerator::generateWaveform() {
         // Per-hit analog contribution for truth extraction
         std::vector<Double_t> hit_contrib(fDaq.num_samples, 0.0);
 
-        for(Double_t pe_time : hit.peTimes) {
-            Double_t smeared_time = pe_time + tts_dist(fRng);
-            Double_t smeared_gain = gain_dist(fRng);
-            if(smeared_gain < 0.0) smeared_gain = 0.0;
+        // One TTS smear for the whole hit — all PEs arrive together.
+        // This prevents spurious secondary peaks on the rising edge that
+        // arise from superimposing many individually time-shifted SPE pulses.
+        Double_t smeared_time = hit.hitTime + tts_dist(fRng);
 
-            for(Int_t i = 0; i < fDaq.num_samples; i++) {
-                Double_t current_time = i * fDaq.sample_rate;
-                // Optimization
-                if(current_time > smeared_time - 5.0 && current_time < smeared_time + 50) {
-                    Double_t val = spePulse(current_time, smeared_time, smeared_gain);
-                    hit_contrib[i] += val;
-                    analog_wf[i] += val;
-                }
+        // Sum individual PE gains into one effective amplitude.
+        Double_t effective_amplitude = 0.0;
+        for(Int_t pe = 0; pe < static_cast<Int_t>(hit.peTimes.size()); pe++) {
+            effective_amplitude += gain_dist(fRng);
+        }
+        if(effective_amplitude < 0.0) effective_amplitude = 0.0;
+
+        // Evaluate a single SPE-shaped pulse scaled by the total charge.
+        for(Int_t i = 0; i < fDaq.num_samples; i++) {
+            Double_t current_time = i * fDaq.sample_rate;
+            if(current_time > smeared_time - 5.0 && current_time < smeared_time + 50) {
+                Double_t val = spePulse(current_time, smeared_time, effective_amplitude);
+                hit_contrib[i] += val;
+                analog_wf[i] += val;
             }
         }
 

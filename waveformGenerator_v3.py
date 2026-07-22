@@ -68,46 +68,60 @@ class WaveformGenerator:
     # ---------------------------------------------------------
     # PE Time Generator (shared by all waveform types)
     # ---------------------------------------------------------
-    def _generate_pe_times(self) -> list[float]:
-        """Simulate physics events: multi-hits and afterpulsing."""
+    def _generate_pe_times(self) -> list[tuple[float, int]]:
+        """Simulate physics events: multi-hits.
+
+        Returns a list of (hit_time, n_pe) tuples — one entry per physics hit.
+        TTS smearing is intentionally NOT applied here; it is applied once per
+        hit in each waveform generator so that all PEs from the same hit share
+        a single time offset, avoiding spurious secondary peaks on the rising edge.
+        """
         num_pulses = random.randint(1, self.daq_params.max_n_pulses)
         window_max = self.daq_params.num_samples * self.daq_params.sample_rate - 50.0
 
-        all_pe_times = []
+        hits = []
         for _ in range(num_pulses):
             hit_time = random.uniform(10.0, window_max)
-            num_pes = np.random.poisson(15)  # Avg 15 primary PEs per hit
+            num_pes = max(1, np.random.poisson(15))  # Avg 15 primary PEs per hit
+            hits.append((hit_time, num_pes))
 
-            for _ in range(num_pes):
-                all_pe_times.append(hit_time)
-
-                # # Afterpulse roll
-                # if random.random() < self.det_params.ap_prob:
-                #     delayed_time = hit_time + random.gauss(
-                #         self.det_params.ap_delay_mean, self.det_params.ap_delay_sigma)
-                #     all_pe_times.append(delayed_time)
-
-        all_pe_times.sort()
-        return all_pe_times
+        # Sort by arrival time so the caller can process chronologically
+        hits.sort(key=lambda h: h[0])
+        return hits
 
     # --------------
     # SPE Waveform
     # --------------
     def generate_pe_waveform(self) -> list[int]:
-        """Generate digitized FADC waveform using SPE pulse shape."""
-        pe_times = self._generate_pe_times()
+        """Generate digitized FADC waveform using SPE pulse shape.
+
+        TTS smearing is applied once per hit (not per individual PE) so that
+        all PEs from the same physics event are time-shifted together. The
+        per-PE gain fluctuations are summed into a single effective amplitude
+        for the hit. This prevents spurious shoulders/secondary peaks on the
+        rising edge that would otherwise arise from superimposing many
+        individually time-shifted SPE pulses.
+        """
+        hits = self._generate_pe_times()   # list of (hit_time, n_pe)
         analog_waveform = [0.0] * self.daq_params.num_samples
 
-        for true_time in pe_times:
-            smeared_time = true_time + random.gauss(0.0, self.det_params.tts_sigma)
-            smeared_gain = random.gauss(self.det_params.mean_gain, self.det_params.gain_sigma)
-            if smeared_gain < 0.0:
-                smeared_gain = 0.0
+        for hit_time, n_pe in hits:
+            # One TTS smear for the whole hit — all PEs arrive together.
+            smeared_time = hit_time + random.gauss(0.0, self.det_params.tts_sigma)
 
+            # Sum individual PE gains into one effective amplitude.
+            effective_amplitude = sum(
+                random.gauss(self.det_params.mean_gain, self.det_params.gain_sigma)
+                for _ in range(n_pe)
+            )
+            if effective_amplitude < 0.0:
+                effective_amplitude = 0.0
+
+            # Evaluate a single SPE-shaped pulse scaled by the total charge.
             for i in range(self.daq_params.num_samples):
                 current_time = i * self.daq_params.sample_rate
                 if (smeared_time - 5.0) < current_time < (smeared_time + 50.0):
-                    analog_waveform[i] += self._spe_pulse(current_time, smeared_time, smeared_gain)
+                    analog_waveform[i] += self._spe_pulse(current_time, smeared_time, effective_amplitude)
 
         # Noise + Digitization
         adc_waveform = [0] * self.daq_params.num_samples
@@ -128,15 +142,13 @@ class WaveformGenerator:
         This is a direct Python translation of 
         waveformGenerator_v2::squareWaveform() from the C++ code.
         """
-        pe_times = self._generate_pe_times()
+        hits = self._generate_pe_times()   # list of (hit_time, n_pe)
         square_wf = [0.0] * self.daq_params.num_samples
 
         # Convolution with square pulse template
-        for true_time in pe_times:
-            # smeared_time = true_time + random.gauss(0.0, self.det_params.tts_sigma)
-            smeared_time = true_time 
-            # smeared_gain = random.gauss(self.det_params.mean_gain, self.det_params.gain_sigma)
-            smeared_gain = self.det_params.mean_gain
+        for hit_time, n_pe in hits:
+            smeared_time = hit_time          # no TTS for square (deterministic shape)
+            smeared_gain = self.det_params.mean_gain * n_pe
             if smeared_gain < 0.0:
                 smeared_gain = 0.0
 
@@ -160,15 +172,13 @@ class WaveformGenerator:
     # ----------------
     def generate_triangle_waveform(self) -> list[int]:
         """Generate digitized FADC waveform using triangle pulse shape."""
-        pe_times = self._generate_pe_times()
+        hits = self._generate_pe_times()   # list of (hit_time, n_pe)
         square_wf = [0.0] * self.daq_params.num_samples
 
-        # Convolution with square pulse template
-        for true_time in pe_times:
-            # smeared_time = true_time + random.gauss(0.0, self.det_params.tts_sigma)
-            smeared_time = true_time 
-            # smeared_gain = random.gauss(self.det_params.mean_gain, self.det_params.gain_sigma)
-            smeared_gain = self.det_params.mean_gain
+        # Convolution with triangle pulse template
+        for hit_time, n_pe in hits:
+            smeared_time = hit_time          # no TTS for triangle (deterministic shape)
+            smeared_gain = self.det_params.mean_gain * n_pe
             if smeared_gain < 0.0:
                 smeared_gain = 0.0
 
