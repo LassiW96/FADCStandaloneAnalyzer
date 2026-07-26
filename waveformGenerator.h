@@ -23,8 +23,8 @@ struct DigitizerParams {
 
 // Structs for the waveform generator algorithm v2 - keep the safety values
 struct WaveformParams {
-    Double_t tau_r = 2.0;           // Rise time (ns)
-    Double_t tau_f = 5.0;          // Decay time (ns)
+    Double_t tau_r = 1.0;           // Rise time (ns)
+    Double_t tau_f = 3.0;          // Decay time (ns)
     Double_t tts_sigma = 1.5;       // Transit time spread (ns)
     Double_t mean_gain = 10.0;       // Mean amplitude per PE (mV)
     Double_t gain_sigma = 2.5;      // Gain variation (mV)
@@ -36,7 +36,7 @@ struct WaveformParams {
 
     // Parameters needed for the initial algorithm
     Int_t pulse_width = 3;          // Pulse width in samples
-    Int_t pulse_separation = 10;    // Pulse separation in samples
+    Int_t pulse_separation = 7;    // Pulse separation in samples
 };
 
 // Truth-level pulse info per hit, computed during waveform generation.
@@ -46,6 +46,13 @@ struct TruthPulseInfo {
     std::vector<Double_t> pulseIntegral;   // Ped-subtracted integral in ADC counts (÷ v_lsb)
     std::vector<Double_t> pulseAmplitude;  // Peak in ADC counts (÷ v_lsb + pedestal)
     std::vector<Double_t> pulseTime;       // Half-max crossing in 1/64th-sample units
+};
+
+// Pulse shape enumerator
+enum class PulseShape {
+    SPE,
+    Square,
+    Triangle
 };
 
 class waveformGenerator {
@@ -63,10 +70,8 @@ class waveformGenerator {
         std::vector<Int_t> singlePulseWaveform() const;
         std::vector<Int_t> multiplePulseWaveform() const;
 
-        // PE based generators
-        std::vector<Int_t> generateWaveform();
-        std::vector<Int_t> squareWaveform();
-        std::vector<Int_t> triangleWaveform();
+        // PE based generator - pass the enum to the function, default is the SPE pulse shape
+        std::vector<Int_t> generateWaveform(PulseShape shape = PulseShape::SPE);
 
         // Accessors for truth-level pulse info computed during generation
         const TruthPulseInfo& getTruthInfo() const { return fTruthInfo; }
@@ -74,16 +79,13 @@ class waveformGenerator {
         
     private:
         TruthPulseInfo fTruthInfo;
-
-        // Members for waveform generator v2
         DigitizerParams fDaq;
         WaveformParams fWf;
 
         // Per-instance RNG — thread-safe (no shared global state)
         mutable std::mt19937 fRng;
 
-        // Helpers for waveform generator v2
-        // Waveform templates
+        // Helpers for waveform generator v2 - waveform templates
         Double_t spePulse(Double_t t, Double_t t0, Double_t amp) const;
         Double_t squarePulse(Double_t t, Double_t t0, Double_t amp) const;
         Double_t trianglePulse(Double_t t, Double_t t0, Double_t amp) const;

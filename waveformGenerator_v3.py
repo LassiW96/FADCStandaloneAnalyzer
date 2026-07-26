@@ -8,8 +8,8 @@ from dataclasses import dataclass
 class DetectorParams:
     tau_r: float = 2.0
     tau_f: float = 5.0
-    tts_sigma: float = 1.5
-    mean_gain: float = 50.0
+    tts_sigma: float = 0.5
+    mean_gain: float = 10.0
     gain_sigma: float = 1.0
     ap_prob: float = 0.03
     ap_delay_mean: float = 80.0

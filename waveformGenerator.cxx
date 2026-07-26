@@ -137,20 +137,17 @@ std::vector<waveformGenerator::PEHit> waveformGenerator::generatePEHits() const 
 
     for (Int_t p = 0; p < num_pulses; p++) {
         PEHit hit;
-        hit.hitTime = window_dist(fRng);
-        Int_t num_pes = pe_per_hit_dist(fRng);
 
+        do {
+            hit.hitTime = window_dist(fRng);
+        } while(std::any_of(hits.begin(), hits.end(), [&](const PEHit& h) {
+            return std::abs(hit.hitTime - h.hitTime) < fWf.pulse_separation * fDaq.sample_rate;
+        }));
+
+        Int_t num_pes = pe_per_hit_dist(fRng);
         for (Int_t i = 0; i < num_pes; i++) {
             hit.peTimes.push_back(hit.hitTime);
-
-            // After pulse probability roll
-            // if(ap_chance(fRng) < fWf.ap_prob) {
-            //     Double_t delayed_time = hit.hitTime + ap_time_dist(fRng);
-            //     hit.peTimes.push_back(delayed_time);
-            // }
         }
-        // Sort PE times within this hit
-        std::sort(hit.peTimes.begin(), hit.peTimes.end());
         hits.push_back(hit);
     }
     // Sort hits by arrival time
@@ -159,7 +156,7 @@ std::vector<waveformGenerator::PEHit> waveformGenerator::generatePEHits() const 
     return hits;
 }
 
-std::vector<Int_t> waveformGenerator::generateWaveform() {
+std::vector<Int_t> waveformGenerator::generateWaveform(PulseShape shape) {
     auto hits = generatePEHits();
     fTruthInfo = {};  // Auto-clear truth info
 
@@ -189,8 +186,16 @@ std::vector<Int_t> waveformGenerator::generateWaveform() {
         // Evaluate a single SPE-shaped pulse scaled by the total charge.
         for(Int_t i = 0; i < fDaq.num_samples; i++) {
             Double_t current_time = i * fDaq.sample_rate;
+            Double_t val = 0.0;
             if(current_time > smeared_time - 5.0 && current_time < smeared_time + 50) {
-                Double_t val = spePulse(current_time, smeared_time, effective_amplitude);
+                switch(shape) {
+                    case PulseShape::SPE: 
+                        val = spePulse(current_time, smeared_time, effective_amplitude); break;
+                    case PulseShape::Square: 
+                        val = squarePulse(current_time, smeared_time, effective_amplitude); break;
+                    case PulseShape::Triangle: 
+                        val = trianglePulse(current_time, smeared_time, effective_amplitude); break;
+                }
                 hit_contrib[i] += val;
                 analog_wf[i] += val;
             }
@@ -242,153 +247,7 @@ std::vector<Int_t> waveformGenerator::generateWaveform() {
     std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
     for(Int_t i = 0; i < fDaq.num_samples; i++) {
         Double_t noisy_voilage = analog_wf[i] + noise_dist(fRng);
-        Int_t adc_count = static_cast<Int_t>(std::floor(noisy_voilage/fDaq.v_lsb) + fDaq.pedestal);
-        adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
-        adc_wf[i] = adc_count;
-    }
-    return adc_wf;
-}
-
-std::vector<Int_t> waveformGenerator::squareWaveform() {
-    auto hits = generatePEHits();
-    fTruthInfo = {};  // Auto-clear truth info
-
-    std::vector<Double_t> square_wf(fDaq.num_samples, 0.0);
-
-    for(auto& hit : hits) {
-        // Per-hit analog contribution for truth extraction
-        std::vector<Double_t> hit_contrib(fDaq.num_samples, 0.0);
-
-        for(Double_t pe_time : hit.peTimes) {
-            for(Int_t i = 0; i < fDaq.num_samples; i++) {
-                Double_t current_time = i * fDaq.sample_rate;
-                // Optimization
-                if(current_time > pe_time - 5.0 && current_time < pe_time + 50) {
-                    Double_t val = squarePulse(current_time, pe_time, fWf.mean_gain);
-                    hit_contrib[i] += val;
-                    square_wf[i] += val;
-                }
-            }
-        }
-
-        // Extract truth features from per-hit contribution
-        // Find peak amplitude and bin
-        Double_t peakAmp = 0.0;
-        Int_t peakBin = 0;
-        for(Int_t i = 0; i < fDaq.num_samples; i++) {
-            if(hit_contrib[i] > peakAmp) {
-                peakAmp = hit_contrib[i];
-                peakBin = i;
-            }
-        }
-
-        // Integral: sum over non-negligible samples (>1% of peak),
-        // converted to ADC counts (pedestal-subtracted)
-        Double_t integral = 0.0;
-        Double_t threshold = peakAmp * 0.01;
-        for(Int_t i = 0; i < fDaq.num_samples; i++) {
-            if(hit_contrib[i] > threshold) {
-                integral += hit_contrib[i];
-            }
-        }
-        integral /= fDaq.v_lsb;  // mV -> ADC counts
-
-        // Amplitude: convert to ADC with pedestal (matches fSampPulseAmp)
-        Double_t ampADC = peakAmp / fDaq.v_lsb + fDaq.pedestal;
-
-        // Time: half-max crossing on rising edge, in 1/64th-sample units
-        Double_t vMid = peakAmp / 2.0;
-        Double_t timeVal = peakBin * 64.0;  // fallback: peak bin
-        for(Int_t i = 0; i < peakBin; i++) {
-            if(hit_contrib[i] <= vMid && hit_contrib[i + 1] > vMid) {
-                timeVal = 64.0 * i + 64.0 * (vMid - hit_contrib[i]) /
-                          (hit_contrib[i + 1] - hit_contrib[i]);
-                break;
-            }
-        }
-
-        fTruthInfo.pulseTime.push_back(timeVal);
-        fTruthInfo.pulseAmplitude.push_back(ampADC);
-        fTruthInfo.pulseIntegral.push_back(integral);
-    }
-
-    // Digitize
-    std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
-    for(Int_t i = 0; i < fDaq.num_samples; i++) {
-        Int_t adc_count = static_cast<Int_t>(std::floor(square_wf[i]/fDaq.v_lsb) + fDaq.pedestal);
-        adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
-        adc_wf[i] = adc_count;
-    }
-    return adc_wf;
-}
-
-std::vector<Int_t> waveformGenerator::triangleWaveform() {
-    auto hits = generatePEHits();
-    fTruthInfo = {};  // Auto-clear truth info
-
-    std::vector<Double_t> triangle_wf(fDaq.num_samples, 0.0);
-
-    for(auto& hit : hits) {
-        // Per-hit analog contribution for truth extraction
-        std::vector<Double_t> hit_contrib(fDaq.num_samples, 0.0);
-
-        for(Double_t pe_time : hit.peTimes) {
-            for(Int_t i = 0; i < fDaq.num_samples; i++) {
-                Double_t current_time = i * fDaq.sample_rate;
-                // Optimization
-                if(current_time > pe_time - 5.0 && current_time < pe_time + 50) {
-                    Double_t val = trianglePulse(current_time, pe_time, fWf.mean_gain);
-                    hit_contrib[i] += val;
-                    triangle_wf[i] += val;
-                }
-            }
-        }
-
-        // Extract truth features from per-hit contribution
-        // Find peak amplitude and bin
-        Double_t peakAmp = 0.0;
-        Int_t peakBin = 0;
-        for(Int_t i = 0; i < fDaq.num_samples; i++) {
-            if(hit_contrib[i] > peakAmp) {
-                peakAmp = hit_contrib[i];
-                peakBin = i;
-            }
-        }
-
-        // Integral: sum over non-negligible samples (>1% of peak),
-        // converted to ADC counts (pedestal-subtracted)
-        Double_t integral = 0.0;
-        Double_t threshold = peakAmp * 0.01;
-        for(Int_t i = 0; i < fDaq.num_samples; i++) {
-            if(hit_contrib[i] > threshold) {
-                integral += hit_contrib[i];
-            }
-        }
-        integral /= fDaq.v_lsb;  // mV -> ADC counts
-
-        // Amplitude: convert to ADC with pedestal (matches fSampPulseAmp)
-        Double_t ampADC = peakAmp / fDaq.v_lsb + fDaq.pedestal;
-
-        // Time: half-max crossing on rising edge, in 1/64th-sample units
-        Double_t vMid = peakAmp / 2.0;
-        Double_t timeVal = peakBin * 64.0;  // fallback: peak bin
-        for(Int_t i = 0; i < peakBin; i++) {
-            if(hit_contrib[i] <= vMid && hit_contrib[i + 1] > vMid) {
-                timeVal = 64.0 * i + 64.0 * (vMid - hit_contrib[i]) /
-                          (hit_contrib[i + 1] - hit_contrib[i]);
-                break;
-            }
-        }
-
-        fTruthInfo.pulseTime.push_back(timeVal);
-        fTruthInfo.pulseAmplitude.push_back(ampADC);
-        fTruthInfo.pulseIntegral.push_back(integral);
-    }
-
-    // Digitize
-    std::vector<Int_t> adc_wf(fDaq.num_samples, 0);
-    for(Int_t i = 0; i < fDaq.num_samples; i++) {
-        Int_t adc_count = static_cast<Int_t>(std::floor(triangle_wf[i]/fDaq.v_lsb) + fDaq.pedestal);
+        Int_t adc_count = static_cast<Int_t>(std::round((noisy_voilage/fDaq.v_lsb) + fDaq.pedestal));
         adc_count = std::max(0, std::min(adc_count, fDaq.max_adc));
         adc_wf[i] = adc_count;
     }
