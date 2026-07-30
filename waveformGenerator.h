@@ -11,7 +11,7 @@ struct DigitizerParams {
     Double_t sample_rate = 4.0;      // Sampling rate of the digitizer (250 MHz)
     Int_t num_samples = 256;         // #of samples in the sampling window
     Double_t pedestal = 100.0;       // Pedestal in ADC counts
-    Double_t noise_sigma = 1.5;      // Electronic noise (mV)
+    Double_t noise_sigma = 0.50;      // Electronic noise (mV)
     Double_t v_lsb = 1.0;            // Voltage resolution (mV per ADC count)
     Int_t max_adc = 4095;            // Maximum ADC value (12-bit)
     Int_t max_n_pulses = 4;          // Max # of pulses per window
@@ -23,8 +23,8 @@ struct DigitizerParams {
 
 // Structs for the waveform generator algorithm v2 - keep the safety values
 struct WaveformParams {
-    Double_t tau_r = 1.0;           // Rise time (ns)
-    Double_t tau_f = 3.0;          // Decay time (ns)
+    Double_t tau_r = 2.0;           // Rise time (ns)
+    Double_t tau_f = 5.0;          // Decay time (ns)
     Double_t tts_sigma = 1.5;       // Transit time spread (ns)
     Double_t mean_gain = 10.0;       // Mean amplitude per PE (mV)
     Double_t gain_sigma = 2.5;      // Gain variation (mV)
