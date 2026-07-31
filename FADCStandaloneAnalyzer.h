@@ -1,5 +1,5 @@
-#ifndef FADCSATANDALONEANALYZER_H
-#define FADCSATANDALONEANALYZER_H
+#ifndef FADCSTANDALONEANALYZER_H
+#define FADCSTANDALONEANALYZER_H
 
 #include <vector>
 #include <cmath>
@@ -8,7 +8,9 @@
 #include "RtypesCore.h"
 #include "TMath.h"
 
-//_________________Data structures which change only per-module basis________________
+#include "waveformGenerator.h"  // for WaveformParams (tau_r, tau_f)
+
+//Data structures that change only per-module basis
 //Configurations
 struct FADCConfig {
     // configuration parameters - taken from db
@@ -50,34 +52,114 @@ struct FADCPulse {
     std::vector<Int_t>    fSampPulsePileup;
 };
 
+// Fit based analysis data structures
+// Parameters
+struct TemplateAnalysisConfig {
+    // Pedestal
+    Int_t    fNPedSamples  = 4;      // samples used to estimate the pedestal
+
+    // Matched-filter window  (mirrors mfstart/mfend/mfleft/mfright in fit.C)
+    Int_t    fMFLeft       = 5;      // samples left  of template peak in MF kernel
+    Int_t    fMFRight      = 5;      // samples right of template peak in MF kernel
+    Int_t    fMFStart      = 0;     // first sample of the MF search window
+    Int_t    fMFEnd        = 250;    // last  sample of the MF search window
+
+    // Peak finding  (mirrors specthres, mfthres in fit.C)
+    Double_t fMFThreshold  = 0.5;   // MF amplitude threshold (normalised units)
+    Int_t    fMFSeparation = 3;     // minimum distance between two MF peaks (samples)
+    Int_t    fMaxPulses    = 12;    // cap on the number of pulses to fit
+
+    // Template fit scan  (mirrors the +-4-bin window in Fitwf2's SetParLimits)
+    Double_t fScanHalf     = 4.0;   // +- scan range around the MF candidate (samples)
+    Double_t fScanStep     = 0.25;  // step size of the t0 scan (samples)
+
+    // Local fit window: how many samples around the MF candidate to include in the fit.
+    // Should be large enough to contain the full pulse shape (~2–3 decay time constants)
+    // but small enough to exclude other pulses and avoid baseline absorption.
+    Int_t    fFitMargin    = 20;    // fit over [peak - margin, peak + margin]
+
+    // Noise model  (mirrors the sqrt(|content|*4.096/2)/4.096 in fit.C line 895)
+    Double_t fAdcPerMV     = 4.096; // ADC counts per mV
+    Double_t fMinSigma     = 0.5;   // floor for per-sample sigma (ADC counts)
+
+    // Amplitude quality cut
+    Double_t fAmpCutADC    = 1.0;   // discard fitted pulses below this amplitude
+};
+
+// FADC Template (kernal for Matched Filter)
+struct FADCTemplate {
+
+    std::vector<Double_t> shape;      // normalised pulse shape, shape[i] in [0,1]
+    std::vector<Double_t> mfKernel;   // reversed window used in the matched filter
+    Double_t              mfNorm;     // sum(mfKernel) used as the normalisation divisor
+    Int_t                 peakBin;    // sample index of the template peak (shape=1)
+
+    // Build template from WaveformParams (SPE bi-exponential pulse shape).
+    // Parameters:
+    //   wp          - WaveformParams (provides tau_r and tau_f)
+    //   sampleRate  - ns per sample (e.g. 4.0 for the NPS fADC)
+    //   nSamples    - template length in samples (e.g. 110)
+    //   peakTime_ns - where to place the pulse peak within the window (ns)
+    //   mfLeft/Right- half-widths of the MF kernel in samples
+    static FADCTemplate fromWaveformParams(const WaveformParams& wp,
+                                           Double_t sampleRate  = 4.0,
+                                           Int_t    nSamples    = 110,
+                                           Double_t peakTime_ns = 20.0,
+                                           Int_t    mfLeft      = 5,
+                                           Int_t    mfRight     = 5);
+
+    // Sub-sample evaluation via linear interpolation.
+    // Returns 0 for t outside [0, shape.size()-2].
+    Double_t eval(Double_t t) const;
+};
+
+// Outputs
+struct FitPulseResult {
+    Double_t timeSample;    // fitted t0 in sample units
+    Double_t amplitude;     // fitted amplitude A (pedestal-subtracted ADC counts)
+    Double_t integral;      // fitted integral of the pulse
+    Double_t baseline;      // fitted baseline offset b (residual DC after ped sub)
+    Double_t chi2ndf;       // chi2 / NDF at the best t0
+    Double_t mfAmplitude;   // MF output value at the candidate peak
+    Bool_t   valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
+};
+
+struct FADCPulseWF {
+    Double_t                    pedestal;  // mean of the first fNPedSamples
+    Int_t                       nPulses;   // number of valid fitted pulses
+    std::vector<FitPulseResult> pulses;    // one entry per MF peak, sorted by time
+};
+
 class FADCStandaloneAnalyzer {
 public:
   FADCStandaloneAnalyzer();
-  virtual ~FADCStandaloneAnalyzer() = default;
+  ~FADCStandaloneAnalyzer() = default;
 
   // Configuration setters
   void setConfig(const FADCConfig& config) {fConfig = config;}
   void setCalib(const FADCCalib& calib) {fCalib = calib;}
 
   // Getters
-  FADCConfig getConfig() const {return fConfig;}
-  FADCCalib getCalib() const {return fCalib;}
+  const FADCConfig& getConfig() const { return fConfig; }
+  const FADCCalib&  getCalib()  const { return fCalib; }
 
   // Main analysis function
   FADCPulse Analyze(const std::vector<Double_t>& samples,
                                  Double_t gain, Double_t tcal) const;
-                              
+
+  
+  // Fit based functions
+  // Note: use FADCTemplate::fromWaveformParams(...) static factory to build a template.
+  // Main Template Analysis Function
+  FADCPulseWF AnalyzeWithTemplate(const std::vector<Double_t>& samples,
+                                  const FADCTemplate&          tmpl,
+                                  const TemplateAnalysisConfig& cfg = TemplateAnalysisConfig{}) const;
 
 private:
   FADCConfig fConfig;
-  FADCCalib fCalib;
-
-  // Any helper functions needed, to help the main analysis function ...
-  // Pedestal calculation function
-  // Pulse pillup finding function
-  // NSAT passing findng function
-  
-  //ClassDef(FADCStandaloneAnalyzer, 0);
+  FADCCalib  fCalib;
+  // Helper functions (computeMatchedFilter, findMFPeaks, fitSingleTemplate) are
+  // implemented as file-static free functions in FADCStandaloneAnalyzer.cxx.
 };    // end FADCStandaloneAnalyzer
 
-#endif // #ifndef FADCSATANDALONEANALYZER_H
+#endif // FADCSTANDALONEANALYZER_H

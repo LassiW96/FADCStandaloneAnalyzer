@@ -7,6 +7,11 @@
 #include "RtypesCore.h"
 #include "TMath.h"
 
+namespace WaveformUtil {
+    // Same math as the private spePulse, but now publicly accessible
+    Double_t spePulse(Double_t t, Double_t t0, Double_t tau_r, Double_t tau_f);
+}
+
 struct DigitizerParams {
     Double_t sample_rate = 4.0;      // Sampling rate of the digitizer (250 MHz)
     Int_t num_samples = 256;         // #of samples in the sampling window
@@ -15,6 +20,7 @@ struct DigitizerParams {
     Double_t v_lsb = 1.0;            // Voltage resolution (mV per ADC count)
     Int_t max_adc = 4095;            // Maximum ADC value (12-bit)
     Int_t max_n_pulses = 4;          // Max # of pulses per window
+    Int_t tdc_subsamples = 64;       // Number of time subsamples per FADC sample
 
     // Params needed for the initial algorithm and constant shape pulses
     Int_t init_ped_samples = 4;     // # of samples needed to calculate initial pedestal
@@ -35,7 +41,7 @@ struct WaveformParams {
     Double_t ap_delay_sigma = 5.0;   // Spread in afterpulse delay (ns)
 
     // Parameters needed for the initial algorithm
-    Int_t pulse_width = 3;          // Pulse width in samples
+    Int_t pulse_width = 10;          // Pulse width in samples
     Int_t pulse_separation = 7;    // Pulse separation in samples
 };
 

@@ -99,9 +99,13 @@ std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
 
 // PE based waveform generators
 // Waveform generator v2 related functions - now the parameters are read from the object state
+Double_t WaveformUtil::spePulse(Double_t t, Double_t t0, Double_t tau_r, Double_t tau_f) {
+    if(t < t0) return 0.0;
+    return (std::exp(-(t - t0) / tau_f) - std::exp(-(t - t0) / tau_r));
+}
 Double_t waveformGenerator::spePulse(Double_t t, Double_t t0, Double_t amp) const {
     if(t < t0) return 0.0;
-    return amp * (std::exp(-(t - t0) / fWf.tau_f) - std::exp(-(t - t0) / fWf.tau_r));
+    return amp * WaveformUtil::spePulse(t, t0, fWf.tau_r, fWf.tau_f);
 }
 
 Double_t waveformGenerator::squarePulse(Double_t t, Double_t t0, Double_t amp) const {

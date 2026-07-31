@@ -18,6 +18,7 @@ multithread_tests
 waveform
 new_wf
 template_fit_debug
+run_tests_anwithtemp
 
 *.root
 *.png
