@@ -34,6 +34,7 @@ struct WaveformParams {
     Double_t tts_sigma = 1.5;       // Transit time spread (ns)
     Double_t mean_gain = 10.0;       // Mean amplitude per PE (mV)
     Double_t gain_sigma = 2.5;      // Gain variation (mV)
+    // Double_t pes_per_pulse = 10;   // Number of PEs per pulse
 
     // After pulse parameters
     Double_t ap_prob = 0.03;         // After pulse generation probability

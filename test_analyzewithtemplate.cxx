@@ -15,11 +15,13 @@
 #include <TF1.h>
 #include <TGraph.h>
 #include <TString.h>
+#include <TMultiGraph.h>
 
 TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     waveformGenerator gen;
     DigitizerParams daq;
     daq.noise_sigma = 1.0;
+    daq.num_samples = 120;
 
     WaveformParams wf;
     wf.tau_r = 2;
@@ -68,12 +70,21 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
             FADCPulseWF templateResult = analyzer.AnalyzeWithTemplate(samples, tmpl, tmplCfg);
 
             Int_t N = static_cast<Int_t>(samples.size());
-            TH1D hWaveform("hWaveform" + TString::Itoa(i, 10), 
-                "Template Fit (k = " + TString::Itoa(i, 10) + ");Sample;ADC", N, -0.5, N - 0.5);
+            // TH1D hWaveform("hWaveform" + TString::Itoa(i, 10), 
+            //     "Template Fit (k = " + TString::Itoa(i, 10) + ");Sample;ADC", N, -0.5, N - 0.5);
+            // for (Int_t j = 0; j < N; ++j) {
+            //     hWaveform.SetBinContent(j + 1, samples[j]);
+            // }
+            // hWaveform.SetStats(0);
+
+            TGraph* gSamples = new TGraph(N);
             for (Int_t j = 0; j < N; ++j) {
-                hWaveform.SetBinContent(j + 1, samples[j]);
+                gSamples->SetPoint(j, (double)j, samples[j]);
             }
-            hWaveform.SetStats(0);
+            gSamples->SetMarkerStyle(3);
+            gSamples->SetMarkerSize(0.5);
+            gSamples->SetMarkerColor(kBlue);
+
             TF1 fTotal("fTotal", 
                 [tmpl, templateResult](double* x, double* /*p*/) {
                     double t = x[0];
@@ -90,9 +101,13 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
 
             TGraph* gFit = new TGraph(&fTotal);
             gFit->SetLineColor(kRed);
-            gFit->SetLineWidth(2);
+            gFit->SetLineWidth(1);
 
-            hWaveform.GetListOfFunctions()->Add(gFit, "L");
+            // hWaveform.GetListOfFunctions()->Add(gFit, "L");
+
+            TMultiGraph mg;
+            mg.Add(gSamples, "P"); 
+            mg.Add(gFit, "L");     
 
             // ── Validate results ──────────────────────────────────────────────
             bool run_passed = true;
@@ -139,14 +154,15 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
                 failed_runs.push_back(i);
 
                 if(s1.empty() && s2.empty() && s3.empty()) {
-                    hWaveform.SetName(Form("Waveform_Run_%d", i));
-                    hWaveform.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+                    mg.SetName(Form("Waveform_Run_%d", i));
+                    mg.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
                 }
                 else {
-                    hWaveform.SetName(Form("Waveform_Run_%d_%s_%s_%s", i, s1.c_str(), s2.c_str(), s3.c_str()));
-                    hWaveform.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+                    mg.SetName(Form("Waveform_Run_%d_%s_%s_%s", i, s1.c_str(), s2.c_str(), s3.c_str()));
+                    mg.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
                 }
-                hWaveform.Write();
+                // hWaveform.Write();
+                mg.Write();
             }
         }
 

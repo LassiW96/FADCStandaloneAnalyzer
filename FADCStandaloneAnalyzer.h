@@ -128,6 +128,10 @@ struct FADCPulseWF {
     Double_t                    pedestal;  // mean of the first fNPedSamples
     Int_t                       nPulses;   // number of valid fitted pulses
     std::vector<FitPulseResult> pulses;    // one entry per MF peak, sorted by time
+
+    // Diagnostics
+    std::vector<Double_t> wfPS;
+    std::vector<Double_t> mfOut;
 };
 
 class FADCStandaloneAnalyzer {
@@ -142,6 +146,12 @@ public:
   // Getters
   const FADCConfig& getConfig() const { return fConfig; }
   const FADCCalib&  getCalib()  const { return fCalib; }
+
+  const FADCTemplate& getTemplate() const { return fTemplate; }
+
+  static std::vector<Double_t> computeMatchedFilter(const std::vector<Double_t>&  wfPS,
+                                                    const FADCTemplate&           tmpl,
+                                                    const TemplateAnalysisConfig& cfg = TemplateAnalysisConfig{});
 
   // Main analysis function
   FADCPulse Analyze(const std::vector<Double_t>& samples,
@@ -158,6 +168,8 @@ public:
 private:
   FADCConfig fConfig;
   FADCCalib  fCalib;
+
+  FADCTemplate fTemplate;
   // Helper functions (computeMatchedFilter, findMFPeaks, fitSingleTemplate) are
   // implemented as file-static free functions in FADCStandaloneAnalyzer.cxx.
 };    // end FADCStandaloneAnalyzer

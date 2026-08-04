@@ -1,4 +1,5 @@
 #include "FADCStandaloneAnalyzer.h"
+#include "RtypesCore.h"
 
 #include <algorithm>    // std::min, std::max, std::sort, std::min_element, std::max_element
 #include <cmath>        // std::sqrt, std::abs, std::exp
@@ -171,9 +172,13 @@ FADCTemplate FADCTemplate::fromWaveformParams(const WaveformParams& wp,
     FADCTemplate tmpl;
     tmpl.shape.resize(nSamples, 0.0);
 
+    // Hardcoded! Need to figureout the proper way.
+    Double_t tau_r = 2.0;
+    Double_t tau_f = 5.0;
+
     // Evaluate the raw SPE shape using WaveformUtil::spePulse in waveformGenerator
     for (Int_t i = 0; i < nSamples; ++i)
-        tmpl.shape[i] = WaveformUtil::spePulse(i * sampleRate, peakTime_ns, wp.tau_r, wp.tau_f);
+        tmpl.shape[i] = WaveformUtil::spePulse(i * sampleRate, peakTime_ns, tau_r, tau_f);
 
     // Normalise to peak = 1 and record the peak bin
     Double_t peak = *std::max_element(tmpl.shape.begin(), tmpl.shape.end());
@@ -213,7 +218,7 @@ Double_t FADCTemplate::eval(Double_t t) const {
 }
 
 // Compute Matched Filter
-static std::vector<Double_t> computeMatchedFilter(
+std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
         const std::vector<Double_t>& wfPS,
         const FADCTemplate&          tmpl,
         const TemplateAnalysisConfig& cfg)
