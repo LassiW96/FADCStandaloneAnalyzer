@@ -337,7 +337,9 @@ static FitPulseResult fitSingleTemplate(
     best.valid       = kFALSE;
     best.chi2ndf     = std::numeric_limits<Double_t>::max();
     best.timeSample  = candidateBin;
+    best.timeHalfMax = candidateBin;   // placeholder; computed in AnalyzeWithTemplate
     best.amplitude   = 0.0;
+    best.integral    = 0.0;
     best.baseline    = 0.0;
     best.mfAmplitude = 0.0;
 
@@ -477,6 +479,32 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
 
         // Calculate the pulse integral: Integral = amplitude * area(template)
         fit.integral = fit.amplitude * templateArea;
+
+        // ── Half-max rising-edge crossing (CFD-style timing) ──────────────
+        // Mirrors the waveformGenerator truth-timing logic (L235-243) but
+        // restricted to the local fit window so pile-up pulses don't
+        // contaminate the amplitude reference.
+        // Operates on wfResidual *before* subtracting this pulse so the
+        // local peak amplitude is still visible.
+        {
+            Int_t    hLo     = std::max(0,   static_cast<Int_t>(fit.timeSample) - cfg.fFitMargin);
+            Int_t    hHi     = std::min(N-1, static_cast<Int_t>(fit.timeSample) + cfg.fFitMargin);
+            Double_t locPeak = 0.0;
+            Int_t    locBin  = static_cast<Int_t>(fit.timeSample);
+            for (Int_t i = hLo; i <= hHi; ++i) {
+                if (wfResidual[i] > locPeak) { locPeak = wfResidual[i]; locBin = i; }
+            }
+            Double_t vMid   = locPeak / 2.0;
+            Double_t halfMax = static_cast<Double_t>(locBin);  // fallback: peak bin
+            for (Int_t i = hLo; i < locBin; ++i) {
+                if (wfResidual[i] <= vMid && wfResidual[i + 1] > vMid) {
+                    halfMax = i + (vMid - wfResidual[i])
+                                  / (wfResidual[i + 1] - wfResidual[i]);
+                    break;
+                }
+            }
+            fit.timeHalfMax = halfMax;
+        }
 
         if (!fit.valid || fit.amplitude < cfg.fAmpCutADC) {
             continue;   // skip noise — don't store or subtract

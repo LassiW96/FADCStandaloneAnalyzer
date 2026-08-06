@@ -19,6 +19,7 @@ waveform
 new_wf
 template_fit_debug
 run_tests_anwithtemp
+run_tests_anwithtemp_plots
 
 *.root
 *.png

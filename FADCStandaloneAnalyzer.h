@@ -115,7 +115,8 @@ struct FADCTemplate {
 
 // Outputs
 struct FitPulseResult {
-    Double_t timeSample;    // fitted t0 in sample units
+    Double_t timeSample;    // fitted t0 in sample units (template-fit χ² scan)
+    Double_t timeHalfMax;   // half-max rising-edge crossing in sample units (CFD-style)
     Double_t amplitude;     // fitted amplitude A (pedestal-subtracted ADC counts)
     Double_t integral;      // fitted integral of the pulse
     Double_t baseline;      // fitted baseline offset b (residual DC after ped sub)
