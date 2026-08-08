@@ -26,7 +26,7 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     WaveformParams wf;
     wf.tau_r = 2;
     wf.tau_f = 7;
-    wf.mean_gain = 3.0;
+    wf.mean_gain = 10.0;
 
     gen.setDigitizerParams(daq);
     gen.setDetectorParams(wf);
@@ -36,7 +36,7 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     analyzer.setConfig(config);
 
     TemplateAnalysisConfig tmplCfg;
-    tmplCfg.fMFSeparation = 8;
+    tmplCfg.fMFSeparation = 6;
     tmplCfg.fScanHalf = 10;
     tmplCfg.fMFLeft = 8;
     tmplCfg.fMFRight = 8;
@@ -59,7 +59,6 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
 
         TH1F h_int_diff("h_int_diff", "Integral Difference", 100, -100, 100);
         TH1F h_amp_diff("h_amp_diff", "Amplitude Difference", 100, -100, 100);
-        TH1F h_time_diff("h_time_diff", "Time Difference (template-fit t0)", 100, -100, 100);
         TH1F h_time_halfmax_diff("h_time_halfmax_diff", "Time Difference (half-max CFD)", 100, -100, 100);
         
         for(int i = 0; i < num_wfs; i++){
@@ -138,8 +137,6 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
                     // Fill hists
                     h_int_diff.Fill(templateResult.pulses[k].integral - wfInfo.pulseIntegral[k]);
                     h_amp_diff.Fill(templateResult.pulses[k].amplitude - (wfInfo.pulseAmplitude[k] - daq.pedestal));
-                    // Template-fit t0 vs. truth (in TDC sub-sample units)
-                    h_time_diff.Fill(templateResult.pulses[k].timeSample * daq.tdc_subsamples - (wfInfo.pulseTime[k] - daq.tdc_subsamples*5));
                     // Half-max CFD time vs. truth (same unit conversion)
                     h_time_halfmax_diff.Fill(templateResult.pulses[k].timeHalfMax * daq.tdc_subsamples - (wfInfo.pulseTime[k]));
                 }
@@ -169,9 +166,6 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
 
         h_amp_diff.SetTitle("Amplitude Difference");
         h_amp_diff.Write();
-
-        h_time_diff.SetTitle("Time Difference (template-fit t0)");
-        h_time_diff.Write();
 
         h_time_halfmax_diff.SetTitle("Time Difference (half-max CFD)");
         h_time_halfmax_diff.Write();

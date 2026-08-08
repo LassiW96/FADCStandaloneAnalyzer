@@ -43,7 +43,7 @@ struct WaveformParams {
 
     // Parameters needed for the initial algorithm
     Int_t pulse_width = 10;          // Pulse width in samples
-    Int_t pulse_separation = 7;    // Pulse separation in samples
+    Int_t pulse_separation = 15;    // Pulse separation in samples
 };
 
 // Truth-level pulse info per hit, computed during waveform generation.

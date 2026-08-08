@@ -61,11 +61,11 @@ struct TemplateAnalysisConfig {
     // Matched-filter window  (mirrors mfstart/mfend/mfleft/mfright in fit.C)
     Int_t    fMFLeft       = 5;      // samples left  of template peak in MF kernel
     Int_t    fMFRight      = 5;      // samples right of template peak in MF kernel
-    Int_t    fMFStart      = 0;     // first sample of the MF search window
+    Int_t    fMFStart      = fMFLeft;     // first sample of the MF search window
     Int_t    fMFEnd        = 250;    // last  sample of the MF search window
 
     // Peak finding  (mirrors specthres, mfthres in fit.C)
-    Double_t fMFThreshold  = 0.5;   // MF amplitude threshold (normalised units)
+    Double_t fMFThreshold  = 0.1;   // MF amplitude threshold (normalised units)
     Int_t    fMFSeparation = 3;     // minimum distance between two MF peaks (samples)
     Int_t    fMaxPulses    = 12;    // cap on the number of pulses to fit
 
@@ -84,6 +84,15 @@ struct TemplateAnalysisConfig {
 
     // Amplitude quality cut
     Double_t fAmpCutADC    = 1.0;   // discard fitted pulses below this amplitude
+
+    // ── Peak Optimization (added) ────────────────────────────────────────────
+    // Parabolic sub-sample t0 refinement (Improvement 2).
+    // After the chi² scan identifies the best grid point, a 3-point parabola is
+    // fitted to the surrounding chi² values to pin down the true minimum between
+    // scan steps. This reduces timing bias and the amplitude inflation that comes
+    // from a slight t0 mismatch.
+    Bool_t   fRefineT0 = kTRUE;   // kTRUE = apply parabolic refinement; kFALSE = scan-only
+    // ─────────────────────────────────────────────────────────────────────────
 };
 
 // FADC Template (kernal for Matched Filter)
@@ -101,12 +110,36 @@ struct FADCTemplate {
     //   nSamples    - template length in samples (e.g. 110)
     //   peakTime_ns - where to place the pulse peak within the window (ns)
     //   mfLeft/Right- half-widths of the MF kernel in samples
+    // Build template from WaveformParams (SPE bi-exponential pulse shape).
+    // smearSigma  - Gaussian convolution width in samples (Improvement 1);
+    //               rounds the sharp mathematical peak to model bandwidth limits.
+    //               Safe starting value for unknown bandwidth at 4 ns/sample: 0.5.
+    //               Set to 0.0 to disable smearing and recover the original behaviour.
     static FADCTemplate fromWaveformParams(const WaveformParams& wp,
                                            Double_t sampleRate  = 4.0,
                                            Int_t    nSamples    = 110,
                                            Double_t peakTime_ns = 20.0,
                                            Int_t    mfLeft      = 5,
-                                           Int_t    mfRight     = 5);
+                                           Int_t    mfRight     = 5,
+                                           Double_t smearSigma  = 0.5);  // ── Peak Optimization (added)
+
+    // ── Peak Optimization: calibration-data factory (added) ──────────────────
+    // Build template directly from a measured reference pulse (e.g., from a
+    // laser or LED calibration run). rawShape is a vector of ADC-count samples
+    // representing one clean pulse; it is normalised to peak = 1 internally.
+    // Use this factory when calibration data are available. Fall back to
+    // fromWaveformParams() (bi-exponential model) when they are not.
+    //
+    // Parameters:
+    //   rawShape - measured pulse shape (at least 2 samples, peak > 0)
+    //   enable   - kFALSE returns an empty FADCTemplate; the caller should then
+    //              use fromWaveformParams() as backup.
+    //   mfLeft / mfRight - MF kernel half-widths (same meaning as above)
+    static FADCTemplate fromRawSamples(const std::vector<Double_t>& rawShape,
+                                       Bool_t enable   = kTRUE,
+                                       Int_t  mfLeft   = 5,
+                                       Int_t  mfRight  = 5);
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Sub-sample evaluation via linear interpolation.
     // Returns 0 for t outside [0, shape.size()-2].
@@ -123,6 +156,13 @@ struct FitPulseResult {
     Double_t chi2ndf;       // chi2 / NDF at the best t0
     Double_t mfAmplitude;   // MF output value at the candidate peak
     Bool_t   valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
+
+    // ── Peak Optimization (added) ────────────────────────────────────────────
+    // Observed local maximum of the residual waveform inside the fit window,
+    // stored for diagnostic comparison with the fitted amplitude.
+    // If amplitude >> peakAmplitude, the template peak is sharper than the data.
+    Double_t peakAmplitude; // observed waveform max in [fitLo, fitHi] (diagnostic)
+    // ─────────────────────────────────────────────────────────────────────────
 };
 
 struct FADCPulseWF {
