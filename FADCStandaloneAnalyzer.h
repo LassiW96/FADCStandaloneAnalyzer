@@ -119,8 +119,8 @@ struct FADCTemplate {
                                            Double_t sampleRate  = 4.0,
                                            Int_t    nSamples    = 110,
                                            Double_t peakTime_ns = 20.0,
-                                           Int_t    mfLeft      = 5,
-                                           Int_t    mfRight     = 5,
+                                           Int_t    mfLeft      = 3,
+                                           Int_t    mfRight     = 8,
                                            Double_t smearSigma  = 0.5);  // ── Peak Optimization (added)
 
     // ── Peak Optimization: calibration-data factory (added) ──────────────────

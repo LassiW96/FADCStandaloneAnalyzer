@@ -20,7 +20,7 @@
 TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     waveformGenerator gen;
     DigitizerParams daq;
-    daq.noise_sigma = 1.0;
+    daq.noise_sigma = 0.5;
     daq.num_samples = 120;
 
     WaveformParams wf;
@@ -36,14 +36,15 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     analyzer.setConfig(config);
 
     TemplateAnalysisConfig tmplCfg;
-    tmplCfg.fMFSeparation = 6;
-    tmplCfg.fScanHalf = 10;
+    tmplCfg.fMFSeparation = 8;
+    tmplCfg.fScanHalf = 6;     // ±6 from corrected candidateBin = peak - peakBin
     tmplCfg.fMFLeft = 8;
     tmplCfg.fMFRight = 8;
+    tmplCfg.fMFStart = 0;     // search from sample 0 (MF loop now starts at 0)
     tmplCfg.fAmpCutADC = 4.0;
     
 
-    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(WaveformParams{});
+    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(wf);
     
     SECTION("Multiple iterations"){
         const int num_wfs = 1000;

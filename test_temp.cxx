@@ -91,8 +91,8 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     TemplateAnalysisConfig tmplCfg;
     tmplCfg.fMFSeparation = 8;
     tmplCfg.fScanHalf     = 10;
-    tmplCfg.fMFLeft       = 8;
-    tmplCfg.fMFRight      = 8;
+    tmplCfg.fMFLeft       = 2;
+    tmplCfg.fMFRight      = 2;
     tmplCfg.fAmpCutADC    = 4.0;
     FADCStandaloneAnalyzer analyzer;
     SECTION("Write template diagnostic ROOT file") {

@@ -262,10 +262,12 @@ FADCTemplate FADCTemplate::fromWaveformParams(const WaveformParams& wp,
 }
 
 Double_t FADCTemplate::eval(Double_t t) const {
-    if (t < 0.0 || t >= static_cast<Double_t>(shape.size() - 1))
+    if (t < 0.0 || t >= static_cast<Double_t>(shape.size()))
         return 0.0;
     Int_t    lo   = static_cast<Int_t>(t);
     Double_t frac = t - lo;
+    if (lo >= static_cast<Int_t>(shape.size()) - 1)
+        return shape.back();
     return shape[lo] * (1.0 - frac) + shape[lo + 1] * frac;
 }
 
@@ -338,7 +340,10 @@ std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
     std::vector<Double_t> mfOut(N, 0.0);
     Double_t mfOutMin = std::numeric_limits<Double_t>::max();
 
-    for (Int_t i = cfg.fMFLeft; i < N - cfg.fMFRight; ++i) {
+    // Start from 0 — the bounds check on wIdx handles the partial kernel
+    // at the edges, so there is no MF dead zone for early pulses.
+    // cfg.fMFLeft is still used in findMFPeaks to limit the search window.
+    for (Int_t i = 0; i < N; ++i) {
         Double_t val = 0.0;
         for (Int_t j = 0; j < kW; ++j) {
             Int_t wIdx = i + j - cfg.fMFRight;
@@ -350,7 +355,7 @@ std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
     }
 
     // Shift so the global minimum of the MF output = 0  (mirrors fit.C line 905)
-    for (Int_t i = cfg.fMFLeft; i < N - cfg.fMFRight; ++i)
+    for (Int_t i = 0; i < N; ++i)
         mfOut[i] -= mfOutMin;
 
     return mfOut;
@@ -648,9 +653,14 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
         Int_t fitLo = std::max(0, static_cast<Int_t>(peak.position) - cfg.fFitMargin);
         Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peak.position) + cfg.fFitMargin);
 
+        // The MF peak position is the waveform pulse-peak sample.  The template
+        // eval(i - t0) peaks at (t0 + peakBin), so the correct t0 to scan around
+        // is peak.position - peakBin, NOT peak.position itself.
+        Double_t candidateBin = peak.position - static_cast<Double_t>(tmpl.peakBin);
+
         FitPulseResult fit = fitSingleTemplate(
                 wfResidual, tmpl,
-                peak.position,
+                candidateBin,
                 fitLo, fitHi,
                 cfg);
 
@@ -680,10 +690,13 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
         // Operates on wfResidual *before* subtracting this pulse so the
         // local peak amplitude is still visible.
         {
-            Int_t    hLo     = std::max(0,   static_cast<Int_t>(fit.timeSample) - cfg.fFitMargin);
-            Int_t    hHi     = std::min(N-1, static_cast<Int_t>(fit.timeSample) + cfg.fFitMargin);
+            // Centre the half-max search window on the actual waveform peak
+            // (fit.timeSample + peakBin), not on t0 (fit.timeSample).
+            Int_t    wfPeak  = static_cast<Int_t>(fit.timeSample) + tmpl.peakBin;
+            Int_t    hLo     = std::max(0,   wfPeak - cfg.fFitMargin);
+            Int_t    hHi     = std::min(N-1, wfPeak + cfg.fFitMargin);
             Double_t locPeak = 0.0;
-            Int_t    locBin  = static_cast<Int_t>(fit.timeSample);
+            Int_t    locBin  = wfPeak;
             for (Int_t i = hLo; i <= hHi; ++i) {
                 if (wfResidual[i] > locPeak) { locPeak = wfResidual[i]; locBin = i; }
             }
@@ -712,7 +725,8 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
             wfResidual[i] -= fit.amplitude * f;
         }
 
-        fittedPositions.push_back(fit.timeSample);
+        // Store the waveform-peak position for separation checks (same space as peak.position).
+        fittedPositions.push_back(fit.timeSample + static_cast<Double_t>(tmpl.peakBin));
         result.pulses.push_back(fit);
         result.nPulses++;
     }
