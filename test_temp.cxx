@@ -56,17 +56,23 @@ void writeWaveformDiagnostic(TFile& outfile,
     gSamples->SetMarkerColor(kBlue);
     TGraph* gWfPS  = makeGraph(wfPS,  "wfPS",  "Ped-Subtracted Waveform", kCyan+1, 24);
     TGraph* gMFOut = makeGraph(mfOut, "mfOut", "Matched Filter Output",   kRed,    25);
-    // ── fitted-pulses overlay (TF1 sampled into a TGraph) ───────────
-    TF1 fTotal("fTotal",
-        [&tmpl, &result](double* x, double* /*p*/) {
-            double val = result.pedestal;
-            for (const auto& p : result.pulses)
-                if (p.valid)
-                    val += p.amplitude * tmpl.eval(x[0] - p.timeSample);
-            return val;
-        }, -0.5, N - 0.5, 0);
-    fTotal.SetNpx(1000);
-    TGraph* gFit = new TGraph(&fTotal);
+    // ── fitted-pulses overlay sampled at 0.25-step intervals ───────
+    auto fitFunc = [&tmpl, &result](double t) {
+        double val = result.pedestal;
+        for (const auto& p : result.pulses)
+            if (p.valid)
+                val += p.amplitude * tmpl.eval(t - p.timeSample);
+        return val;
+    };
+    const double fitStep = 0.25;
+    const double fitXMin = -0.5;
+    const double fitXMax = N - 0.5;
+    int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+    TGraph* gFit = new TGraph(nFitPts);
+    for (int k = 0; k < nFitPts; ++k) {
+        double x = fitXMin + k * fitStep;
+        gFit->SetPoint(k, x, fitFunc(x));
+    }
     gFit->SetName("fit_overlay");
     gFit->SetLineColor(kRed+1);
     gFit->SetLineWidth(2);

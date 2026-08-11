@@ -118,7 +118,7 @@ static void writeWaveformDiagnostic(TFile&                         outfile,
     TGraph* gWfPS  = makeGraph(wfPS,  "wfPS",  "Ped-Subtracted Waveform", kCyan+1, 24);
     TGraph* gMFOut = makeGraph(mfOut, "mfOut", "Matched Filter Output",   kRed,    25);
 
-    // ── fitted-pulse overlay evaluated from the template ─────────────────────
+    // ── fitted-pulse overlay sampled at 0.25-step intervals ─────────────────
     TF1 fTotal("fTotal",
         [&tmpl, &result](double* x, double* /*p*/) {
             double val = result.pedestal;
@@ -127,8 +127,15 @@ static void writeWaveformDiagnostic(TFile&                         outfile,
                     val += p.amplitude * tmpl.eval(x[0] - p.timeSample);
             return val;
         }, -0.5, N - 0.5, 0);
-    fTotal.SetNpx(1000);
-    TGraph* gFit = new TGraph(&fTotal);
+    const double fitStep = 0.25;
+    const double fitXMin = -0.5;
+    const double fitXMax = N - 0.5;
+    int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+    TGraph* gFit = new TGraph(nFitPts);
+    for (int k = 0; k < nFitPts; ++k) {
+        double xv = fitXMin + k * fitStep;
+        gFit->SetPoint(k, xv, fTotal.Eval(xv));
+    }
     gFit->SetName("fit_overlay");
     gFit->SetTitle("Fit Overlay;Sample;ADC counts");
     gFit->SetLineColor(kRed+1);

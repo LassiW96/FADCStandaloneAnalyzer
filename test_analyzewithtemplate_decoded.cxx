@@ -217,8 +217,8 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
                     gSamples->SetName(Form("wf_raw_ev%lld_ch%d", iev, elemID));
                     for (Int_t j = 0; j < N; ++j)
                         gSamples->SetPoint(j, (double)j, samples[j]);
-                    gSamples->SetMarkerStyle(3);
-                    gSamples->SetMarkerSize(0.5);
+                    gSamples->SetMarkerStyle(20);
+                    gSamples->SetMarkerSize(1);
                     gSamples->SetMarkerColor(kBlue + 1);
                     gSamples->SetLineColor(kBlue + 1);
 
@@ -230,18 +230,26 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
                                     val += pulse.amplitude * tmpl.eval(x[0] - pulse.timeSample);
                             return val;
                         },  0.0, static_cast<double>(N - 1), 0);
-                    fTotal.SetNpx(1000);
 
-                    TGraph* gFit = new TGraph(&fTotal);
+                    // Build fit graph at 0.25-sample steps
+                    const double fitStep = 0.25;
+                    const double fitXMin = 0.0;
+                    const double fitXMax = static_cast<double>(N - 1);
+                    int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+                    TGraph* gFit = new TGraph(nFitPts);
+                    for (int k = 0; k < nFitPts; ++k) {
+                        double xv = fitXMin + k * fitStep;
+                        gFit->SetPoint(k, xv, fTotal.Eval(xv));
+                    }
                     gFit->SetName(Form("fit_ev%lld_ch%d", iev, elemID));
                     gFit->SetLineColor(kRed);
-                    gFit->SetLineWidth(1);
+                    gFit->SetLineWidth(2);
 
                     TMultiGraph* mg = new TMultiGraph();
                     mg->SetName(Form("Waveform_ev%lld_ch%d_%dpulse(s)", iev, elemID, templateResult.nPulses));
                     mg->SetTitle(Form("Template Fit  ev %lld  ch %d;Sample;ADC counts", iev, elemID));
                     mg->Add(gSamples, "P");
-                    mg->Add(gFit,     "L");
+                    mg->Add(gFit,     "PL");
                     mg->Write();
                 }
 

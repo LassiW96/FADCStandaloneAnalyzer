@@ -92,9 +92,16 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
                     return val;
                 }, -0.5, N - 0.5, 0);
 
-            fTotal.SetNpx(1000);
-
-            TGraph* gFit = new TGraph(&fTotal);
+            // Build fit graph at 0.25-sample steps
+            const double fitStep = 0.25;
+            const double fitXMin = -0.5;
+            const double fitXMax = N - 0.5;
+            int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+            TGraph* gFit = new TGraph(nFitPts);
+            for (int k = 0; k < nFitPts; ++k) {
+                double xv = fitXMin + k * fitStep;
+                gFit->SetPoint(k, xv, fTotal.Eval(xv));
+            }
             gFit->SetLineColor(kRed);
             gFit->SetLineWidth(1);
 

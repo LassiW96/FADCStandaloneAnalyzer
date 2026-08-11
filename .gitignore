@@ -20,6 +20,8 @@ new_wf
 template_fit_debug
 run_tests_anwithtemp
 run_tests_anwithtemp_plots
+run_tests_decoded
+run_tests_anwithtemp_decoded
 
 *.root
 *.png
