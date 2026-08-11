@@ -42,9 +42,12 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     tmplCfg.fMFRight = 8;
     tmplCfg.fMFStart = 0;     // search from sample 0 (MF loop now starts at 0)
     tmplCfg.fAmpCutADC = 4.0;
-    
 
-    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(wf);
+    SPEParams sp;
+    sp.sigma = 1;
+    sp.tau = 8;
+
+    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
     
     SECTION("Multiple iterations"){
         const int num_wfs = 1000;
@@ -62,6 +65,13 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
         TH1F h_amp_diff("h_amp_diff", "Amplitude Difference", 100, -100, 100);
         TH1F h_time_halfmax_diff("h_time_halfmax_diff", "Time Difference (half-max CFD)", 100, -100, 100);
         
+        struct SavedPlot {
+            int index;
+            bool passed;
+            TMultiGraph* mg;
+        };
+        std::vector<SavedPlot> saved_plots;
+
         for(int i = 0; i < num_wfs; i++){
             std::vector<Int_t> rawWaveform = gen.generateWaveform(PulseShape::SPE);
             std::vector<Double_t> samples(rawWaveform.begin(), rawWaveform.end());
@@ -69,47 +79,6 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
             const TruthPulseInfo& wfInfo = gen.getTruthInfo();
 
             FADCPulseWF templateResult = analyzer.AnalyzeWithTemplate(samples, tmpl, tmplCfg);
-
-            Int_t N = static_cast<Int_t>(samples.size());
-
-            TGraph* gSamples = new TGraph(N);
-            for (Int_t j = 0; j < N; ++j) {
-                gSamples->SetPoint(j, (double)j, samples[j]);
-            }
-            gSamples->SetMarkerStyle(3);
-            gSamples->SetMarkerSize(0.5);
-            gSamples->SetMarkerColor(kBlue);
-
-            TF1 fTotal("fTotal", 
-                [tmpl, templateResult](double* x, double* /*p*/) {
-                    double t = x[0];
-                    double val = templateResult.pedestal;
-                    for (const auto& pulse : templateResult.pulses) {
-                        if (pulse.valid) {
-                            val += pulse.amplitude * tmpl.eval(t - pulse.timeSample);
-                        }
-                    }
-                    return val;
-                }, -0.5, N - 0.5, 0);
-
-            // Build fit graph at 0.25-sample steps
-            const double fitStep = 0.25;
-            const double fitXMin = -0.5;
-            const double fitXMax = N - 0.5;
-            int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
-            TGraph* gFit = new TGraph(nFitPts);
-            for (int k = 0; k < nFitPts; ++k) {
-                double xv = fitXMin + k * fitStep;
-                gFit->SetPoint(k, xv, fTotal.Eval(xv));
-            }
-            gFit->SetLineColor(kRed);
-            gFit->SetLineWidth(1);
-
-            // hWaveform.GetListOfFunctions()->Add(gFit, "L");
-
-            TMultiGraph mg;
-            mg.Add(gSamples, "P"); 
-            mg.Add(gFit, "L");     
 
             // ── Validate results ──────────────────────────────────────────────
             bool run_passed = true;
@@ -155,17 +124,75 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
             }
             else {
                 failed_runs.push_back(i);
+            }
 
-                if(s1.empty() && s2.empty() && s3.empty()) {
-                    mg.SetName(Form("Waveform_Run_%d", i));
-                    mg.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+            if(!run_passed || (i % 100 == 0)) {
+                Int_t N = static_cast<Int_t>(samples.size());
+
+                TGraph* gSamples = new TGraph(N);
+                for (Int_t j = 0; j < N; ++j) {
+                    gSamples->SetPoint(j, (double)j, samples[j]);
+                }
+                gSamples->SetMarkerStyle(3);
+                gSamples->SetMarkerSize(0.5);
+                gSamples->SetMarkerColor(kBlue);
+
+                TF1 fTotal("fTotal", 
+                    [tmpl, templateResult](double* x, double* /*p*/) {
+                        double t = x[0];
+                        double val = templateResult.pedestal;
+                        for (const auto& pulse : templateResult.pulses) {
+                            if (pulse.valid) {
+                                val += pulse.amplitude * tmpl.eval(t - pulse.timeSample);
+                            }
+                        }
+                        return val;
+                    }, -0.5, N - 0.5, 0);
+
+                // Build fit graph at 0.25-sample steps
+                const double fitStep = 0.25;
+                const double fitXMin = -0.5;
+                const double fitXMax = N - 0.5;
+                int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+                TGraph* gFit = new TGraph(nFitPts);
+                for (int k = 0; k < nFitPts; ++k) {
+                    double xv = fitXMin + k * fitStep;
+                    gFit->SetPoint(k, xv, fTotal.Eval(xv));
+                }
+                gFit->SetLineColor(kRed);
+                gFit->SetLineWidth(1);
+
+                TMultiGraph* mg = new TMultiGraph();
+                mg->Add(gSamples, "P"); 
+                mg->Add(gFit, "L");     
+
+                if(!run_passed) {
+                    if(s1.empty() && s2.empty() && s3.empty()) {
+                        mg->SetName(Form("Waveform_Run_%d", i));
+                        mg->SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+                    }
+                    else {
+                        mg->SetName(Form("Waveform_Run_%d_%s_%s_%s", i, s1.c_str(), s2.c_str(), s3.c_str()));
+                        mg->SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+                    }
                 }
                 else {
-                    mg.SetName(Form("Waveform_Run_%d_%s_%s_%s", i, s1.c_str(), s2.c_str(), s3.c_str()));
-                    mg.SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
+                    mg->SetName(Form("Waveform_Run_%d", i));
+                    mg->SetTitle(Form("Template Fit Waveform (Run %d);Sample;ADC", i));
                 }
-                // hWaveform.Write();
-                mg.Write();
+
+                saved_plots.push_back({i, run_passed, mg});
+            }
+        }
+
+        double pass_probability = (static_cast<double>(passed_count) / num_wfs) * 100.0;
+
+        for (const auto& plot : saved_plots) {
+            if (!plot.passed) {
+                plot.mg->Write();
+            }
+            else if (pass_probability > 99.0 && (plot.index % 100 == 0)) {
+                plot.mg->Write();
             }
         }
 
@@ -180,8 +207,6 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
 
         outfile.Close();
 
-        double pass_probability = (static_cast<double>(passed_count) / num_wfs) * 100.0;
-
         std::cout << "\n======================================================\n";
         std::cout << "           TEMPLATE WAVEFORM TEST STATISTICS          \n";
         std::cout << "======================================================\n";
@@ -189,7 +214,7 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
         std::cout << "Passed Runs         : " << passed_count << "\n";
         std::cout << "Failed Runs         : " << failed_runs.size() << "\n";
         std::cout << "Pass Probability    : " << std::fixed << std::setprecision(2) << pass_probability << "%\n";
-        std::cout << "Waveforms Saved To  : test_waveform_fits.root\n\n";
+        std::cout << "Waveforms Saved To  : test_waveform_fits2.root\n\n";
 
         if (!failed_runs.empty()) {
             std::cout << "Failed Run Indices  : ";

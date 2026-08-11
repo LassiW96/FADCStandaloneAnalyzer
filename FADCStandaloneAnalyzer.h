@@ -8,7 +8,14 @@
 #include "RtypesCore.h"
 #include "TMath.h"
 
-#include "waveformGenerator.h"  // for WaveformParams (tau_r, tau_f)
+// EMG (exponential-modified Gaussian) model parameters — self-contained, no waveformGenerator dependency.
+// The EMG pulse shape f(t) = exp(s2/2t2 - t/tau) * (1 + erf((t - s2/tau) / (sigma*sqrt(2))))
+// has a naturally smooth, rounded peak; no external smearing is needed.
+// Defaults match the standard NPS detector response; override in test scripts as needed.
+struct SPEParams {
+    Double_t sigma = 5.0;   // Gaussian sigma controlling the rise time (ns)
+    Double_t tau   = 10.0;  // Exponential decay constant controlling the fall time (ns)
+};
 
 //Data structures that change only per-module basis
 //Configurations
@@ -85,14 +92,6 @@ struct TemplateAnalysisConfig {
     // Amplitude quality cut
     Double_t fAmpCutADC    = 1.0;   // discard fitted pulses below this amplitude
 
-    // ── Peak Optimization (added) ────────────────────────────────────────────
-    // Parabolic sub-sample t0 refinement (Improvement 2).
-    // After the chi² scan identifies the best grid point, a 3-point parabola is
-    // fitted to the surrounding chi² values to pin down the true minimum between
-    // scan steps. This reduces timing bias and the amplitude inflation that comes
-    // from a slight t0 mismatch.
-    Bool_t   fRefineT0 = kTRUE;   // kTRUE = apply parabolic refinement; kFALSE = scan-only
-    // ─────────────────────────────────────────────────────────────────────────
 };
 
 // FADC Template (kernal for Matched Filter)
@@ -103,43 +102,38 @@ struct FADCTemplate {
     Double_t              mfNorm;     // sum(mfKernel) used as the normalisation divisor
     Int_t                 peakBin;    // sample index of the template peak (shape=1)
 
-    // Build template from WaveformParams (SPE bi-exponential pulse shape).
+    // Build template from SPEParams using the EMG (exponential-modified Gaussian) pulse shape.
     // Parameters:
-    //   wp          - WaveformParams (provides tau_r and tau_f)
+    //   sp          - SPEParams (sigma, tau; set directly in test scripts)
     //   sampleRate  - ns per sample (e.g. 4.0 for the NPS fADC)
     //   nSamples    - template length in samples (e.g. 110)
-    //   peakTime_ns - where to place the pulse peak within the window (ns)
-    //   mfLeft/Right- half-widths of the MF kernel in samples
-    // Build template from WaveformParams (SPE bi-exponential pulse shape).
-    // smearSigma  - Gaussian convolution width in samples (Improvement 1);
-    //               rounds the sharp mathematical peak to model bandwidth limits.
-    //               Safe starting value for unknown bandwidth at 4 ns/sample: 0.5.
-    //               Set to 0.0 to disable smearing and recover the original behaviour.
-    static FADCTemplate fromWaveformParams(const WaveformParams& wp,
+    //   peakTime_ns - time of the EMG peak within the window (ns).
+    //                 Pass -1.0 (default) to auto-compute: sigma^2/tau + 3*sigma.
+    //   mfLeft      - MF kernel samples left  of the peak.
+    //                 Pass -1 (default) to auto-compute: ceil(2*sigma/sampleRate).
+    //   mfRight     - MF kernel samples right of the peak.
+    //                 Pass -1 (default) to auto-compute: ceil(3*tau/sampleRate).
+    static FADCTemplate fromWaveformParams(const SPEParams& sp,
                                            Double_t sampleRate  = 4.0,
                                            Int_t    nSamples    = 110,
-                                           Double_t peakTime_ns = 20.0,
-                                           Int_t    mfLeft      = 3,
-                                           Int_t    mfRight     = 8,
-                                           Double_t smearSigma  = 0.5);  // ── Peak Optimization (added)
+                                           Double_t peakTime_ns = -1.0,  // -1 = auto: sigma^2/tau + 3*sigma
+                                           Int_t    mfLeft      = -1,    // -1 = auto: ceil(2*sigma/sampleRate)
+                                           Int_t    mfRight     = -1);   // -1 = auto: ceil(3*tau/sampleRate)
 
-    // ── Peak Optimization: calibration-data factory (added) ──────────────────
     // Build template directly from a measured reference pulse (e.g., from a
     // laser or LED calibration run). rawShape is a vector of ADC-count samples
     // representing one clean pulse; it is normalised to peak = 1 internally.
     // Use this factory when calibration data are available. Fall back to
-    // fromWaveformParams() (bi-exponential model) when they are not.
+    // fromWaveformParams() (EMG model) when they are not.
     //
     // Parameters:
-    //   rawShape - measured pulse shape (at least 2 samples, peak > 0)
-    //   enable   - kFALSE returns an empty FADCTemplate; the caller should then
-    //              use fromWaveformParams() as backup.
-    //   mfLeft / mfRight - MF kernel half-widths (same meaning as above)
+    //   rawShape         - measured pulse shape (at least 2 samples, peak > 0)
+    //   enable           - kFALSE returns an empty FADCTemplate (caller uses EMG fallback)
+    //   mfLeft / mfRight - MF kernel half-widths in samples
     static FADCTemplate fromRawSamples(const std::vector<Double_t>& rawShape,
                                        Bool_t enable   = kTRUE,
                                        Int_t  mfLeft   = 5,
                                        Int_t  mfRight  = 5);
-    // ─────────────────────────────────────────────────────────────────────────
 
     // Sub-sample evaluation via linear interpolation.
     // Returns 0 for t outside [0, shape.size()-2].
@@ -157,12 +151,7 @@ struct FitPulseResult {
     Double_t mfAmplitude;   // MF output value at the candidate peak
     Bool_t   valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
 
-    // ── Peak Optimization (added) ────────────────────────────────────────────
-    // Observed local maximum of the residual waveform inside the fit window,
-    // stored for diagnostic comparison with the fitted amplitude.
-    // If amplitude >> peakAmplitude, the template peak is sharper than the data.
-    Double_t peakAmplitude; // observed waveform max in [fitLo, fitHi] (diagnostic)
-    // ─────────────────────────────────────────────────────────────────────────
+
 };
 
 struct FADCPulseWF {

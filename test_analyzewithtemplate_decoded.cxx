@@ -49,7 +49,7 @@
 
 #include "FADCStandaloneAnalyzer.h"
 #include "RtypesCore.h"
-#include "waveformGenerator.h"   // for WaveformParams used to build the bi-exp template
+// waveformGenerator.h not needed here: SPEParams is defined in FADCStandaloneAnalyzer.h
 
 // ROOT Headers
 #include <TROOT.h>
@@ -113,12 +113,11 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
     // ── 3.  Template & analysis configuration ────────────────────────────────
     //        Mirrors the settings in test_analyzewithtemplate.cxx.
     //        Adjust tau_r / tau_f to the real detector pulse shape if known.
-    WaveformParams wf;
-    wf.tau_r     = 3.0;
-    wf.tau_f     = 12.0;
-    wf.mean_gain = 10.0;
+    SPEParams sp;
+    sp.sigma = 1.5;
+    sp.tau = 18.0;
 
-    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(wf);
+    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
 
     FADCStandaloneAnalyzer analyzer;
     FADCConfig config = {4, 50, 2, 5, 2, 12};

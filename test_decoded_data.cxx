@@ -38,7 +38,6 @@
 
 #include "FADCStandaloneAnalyzer.h"
 #include "RtypesCore.h"
-#include "waveformGenerator.h"   // for WaveformParams (used to build the template)
 
 // ROOT Headers
 #include <TROOT.h>
@@ -189,14 +188,13 @@ TEST_CASE("Analyze Decoded FADC Waveforms", "[DecodedData][Plotting]") {
     T->SetBranchAddress("Ndata.moller.scint.samps_elemID", &nsamps_elemID);
     T->SetBranchAddress("moller.scint.samps_elemID",        samps_elemID);
 
-    // ── 3.  Build the template from bi-exponential parameters ────────────────
+    // ── 3.  Build the template from bi-exponential parameters ────────────────────
     //        Adjust tau_r / tau_f to match the real detector response if known.
-    WaveformParams wf;
-    wf.tau_r     = 3.0;
-    wf.tau_f     = 10.0;
-    wf.mean_gain = 10.0;
+    SPEParams sp;
+    sp.sigma = 1;
+    sp.tau = 8;
 
-    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(wf);
+    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
 
     // ── 4.  Configure the template analysis ──────────────────────────────────
     TemplateAnalysisConfig tmplCfg;

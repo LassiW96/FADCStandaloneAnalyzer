@@ -93,7 +93,10 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     WaveformParams  wf;   wf.tau_r = 2;  wf.tau_f = 7;  wf.mean_gain = 3.0;
     gen.setDigitizerParams(daq);
     gen.setDetectorParams(wf);
-    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(wf);
+
+    SPEParams sp; sp.sigma = 1; sp.tau = 8;
+
+    FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
     TemplateAnalysisConfig tmplCfg;
     tmplCfg.fMFSeparation = 8;
     tmplCfg.fScanHalf     = 10;

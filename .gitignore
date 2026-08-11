@@ -22,6 +22,8 @@ run_tests_anwithtemp
 run_tests_anwithtemp_plots
 run_tests_decoded
 run_tests_anwithtemp_decoded
+run_tests_anwithtemp_debug
 
 *.root
 *.png
+*.gdb

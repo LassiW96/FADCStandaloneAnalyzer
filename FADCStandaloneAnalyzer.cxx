@@ -163,85 +163,57 @@ FADCPulse FADCStandaloneAnalyzer::Analyze(const std::vector<Double_t>& samples,
 
 // Fit based functions
 // FADC Template
-FADCTemplate FADCTemplate::fromWaveformParams(const WaveformParams& wp,
+FADCTemplate FADCTemplate::fromWaveformParams(const SPEParams& sp,
                                                Double_t sampleRate,
                                                Int_t    nSamples,
                                                Double_t peakTime_ns,
                                                Int_t    mfLeft,
-                                               Int_t    mfRight,
-                                               Double_t smearSigma)  // ── Peak Optimization (added)
+                                               Int_t    mfRight)
 {
+    // Auto-compute EMG-derived defaults when sentinel values (-1) are passed.
+    // Reference values for sigma=5 ns, tau=10 ns, sampleRate=4 ns/sample:
+    //   peakTime_ns = 5^2/10 + 3*5 = 17.5 ns
+    //   mfLeft      = ceil(2*5/4)   = 3 samples
+    //   mfRight     = ceil(3*10/4)  = 8 samples
+    if (peakTime_ns < 0.0)
+        peakTime_ns = sp.sigma * sp.sigma / sp.tau + 3.0 * sp.sigma;
+    if (mfLeft < 0)
+        mfLeft  = static_cast<Int_t>(std::ceil(2.0 * sp.sigma / sampleRate));
+    if (mfRight < 0)
+        mfRight = static_cast<Int_t>(std::ceil(3.0 * sp.tau   / sampleRate));
+
     FADCTemplate tmpl;
     tmpl.shape.resize(nSamples, 0.0);
 
-    // Evaluate the raw SPE shape using WaveformUtil::spePulse in waveformGenerator
-    for (Int_t i = 0; i < nSamples; ++i)
-        tmpl.shape[i] = WaveformUtil::spePulse(i * sampleRate, peakTime_ns, wp.tau_r, wp.tau_f);
+    // Evaluate the raw asymmetric exponential-gaussian (EMG) shape
+    for (Int_t i = 0; i < nSamples; ++i) {
+        const Double_t dt = i * sampleRate - peakTime_ns;
+        
+        if (sp.sigma > 0.0 && sp.tau > 0.0) {
+            Double_t s2_2t2  = (sp.sigma * sp.sigma) / (2.0 * sp.tau * sp.tau);
+            Double_t erf_arg = (dt - (sp.sigma * sp.sigma) / sp.tau) / (sp.sigma * std::sqrt(2.0));
+            
+            // Calculate the EMG value
+            Double_t val = std::exp(s2_2t2 - (dt / sp.tau)) * (1.0 + std::erf(erf_arg));
+            
+            // Filter out extreme baseline numerical noise
+            tmpl.shape[i] = (val < 1e-12) ? 0.0 : val;
+        } else {
+            // Fallback or delta-function handling if sigma/tau are unset
+            tmpl.shape[i] = 0.0;
+        }
+    }
 
     // Normalise to peak = 1 and record the peak bin
     Double_t peak = *std::max_element(tmpl.shape.begin(), tmpl.shape.end());
     if (peak <= 0.0)
-        throw std::runtime_error("FADCTemplate: zero-amplitude shape -- check WaveformParams");
+        throw std::runtime_error("FADCTemplate: zero-amplitude shape -- check SPEParams");
 
     tmpl.peakBin = -1;
     for (Int_t i = 0; i < nSamples; ++i) {
         tmpl.shape[i] /= peak;
         if (tmpl.shape[i] >= 1.0 - 1e-9) tmpl.peakBin = i;
     }
-
-    // ── Peak Optimization: Gaussian smear (Improvement 1) ───────────────────────
-    // Convolve the normalised bi-exponential shape with a Gaussian kernel of
-    // width smearSigma (in samples). This rounds the sharp mathematical peak
-    // to model the bandwidth limitations (RC time constants, cable dispersion,
-    // digitizer slew rate) of a real detector chain.
-    //
-    // The MF kernel is rebuilt from the smeared shape so the matched filter
-    // sees the same rounded peak as the fitting step.
-    //
-    // Safe default: smearSigma = 0.5 samples (unknown bandwidth at 4 ns/sample).
-    // Set smearSigma = 0.0 to disable and recover the original behaviour.
-    if (smearSigma > 0.0) {
-        // Kernel radius: 3-sigma truncation covers >99.7% of the Gaussian
-        Int_t kRadius = static_cast<Int_t>(std::ceil(3.0 * smearSigma));
-        std::vector<Double_t> kernel(2 * kRadius + 1);
-        Double_t kSum = 0.0;
-        for (Int_t k = -kRadius; k <= kRadius; ++k) {
-            kernel[k + kRadius] = std::exp(-0.5 * k * k / (smearSigma * smearSigma));
-            kSum += kernel[k + kRadius];
-        }
-        // Normalise kernel so energy is conserved (avoids DC gain change)
-        for (auto& v : kernel) v /= kSum;
-
-        // Convolve: smeared[i] = sum_k shape[i-k] * kernel[k]
-        // Boundary samples (within kRadius of the edges) are computed with
-        // the available neighbours; no zero-padding artefacts in the central region.
-        std::vector<Double_t> smeared(nSamples, 0.0);
-        for (Int_t i = 0; i < nSamples; ++i) {
-            for (Int_t k = -kRadius; k <= kRadius; ++k) {
-                Int_t idx = i - k;
-                if (idx >= 0 && idx < nSamples)
-                    smeared[i] += tmpl.shape[idx] * kernel[k + kRadius];
-            }
-        }
-        tmpl.shape = smeared;
-
-        // Re-normalise to peak = 1 (smearing lowers the peak slightly)
-        Double_t smearedPeak = *std::max_element(tmpl.shape.begin(), tmpl.shape.end());
-        if (smearedPeak > 0.0) {
-            for (auto& v : tmpl.shape) v /= smearedPeak;
-        }
-        // Re-locate the peak bin after smearing (may shift by 1 sample)
-        tmpl.peakBin = -1;
-        for (Int_t i = 0; i < nSamples; ++i) {
-            if (tmpl.shape[i] >= 1.0 - 1e-9) tmpl.peakBin = i;
-        }
-        if (tmpl.peakBin < 0) {
-            // Fallback: use the bin with the highest value
-            tmpl.peakBin = static_cast<Int_t>(
-                std::max_element(tmpl.shape.begin(), tmpl.shape.end()) - tmpl.shape.begin());
-        }
-    }
-    // ── End Peak Optimization: Gaussian smear ─────────────────────────────────────────
 
     // Build the matched-filter kernel:
     //   Take the window [peakBin - mfLeft, peakBin + mfRight] of the shape
@@ -271,19 +243,18 @@ Double_t FADCTemplate::eval(Double_t t) const {
     return shape[lo] * (1.0 - frac) + shape[lo + 1] * frac;
 }
 
-// ── Peak Optimization: fromRawSamples factory (added) ──────────────────────────
 // Builds a template from a measured reference pulse (e.g., from a laser or
 // LED calibration run). This path is model-independent: the measured shape is
-// used directly, so no assumptions about tau_r / tau_f are made.
+// used directly, so no assumptions about sigma / tau are made.
 //
 // When enable = kFALSE (no calibration data available), the function returns
 // an empty FADCTemplate (shape.empty() == true) so the caller can detect this
-// and fall back to fromWaveformParams().
+// and fall back to fromWaveformParams() (EMG model).
 //
 // Usage pattern:
 //   FADCTemplate tmpl = FADCTemplate::fromRawSamples(myCalibPulse, kTRUE);
-//   if (tmpl.shape.empty())    // calibration unavailable — use bi-exponential
-//       tmpl = FADCTemplate::fromWaveformParams(wp, ...);
+//   if (tmpl.shape.empty())    // calibration unavailable — use EMG model
+//       tmpl = FADCTemplate::fromWaveformParams(sp, ...);
 FADCTemplate FADCTemplate::fromRawSamples(const std::vector<Double_t>& rawShape,
                                            Bool_t enable,
                                            Int_t  mfLeft,
@@ -324,7 +295,6 @@ FADCTemplate FADCTemplate::fromRawSamples(const std::vector<Double_t>& rawShape,
 
     return tmpl;
 }
-// ── End Peak Optimization: fromRawSamples ──────────────────────────────────────────────
 
 // Compute Matched Filter
 std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
@@ -454,7 +424,7 @@ static FitPulseResult fitSingleTemplate(
     best.integral      = 0.0;
     best.baseline      = 0.0;
     best.mfAmplitude   = 0.0;
-    best.peakAmplitude = 0.0;   // ── Peak Optimization (added): populated in AnalyzeWithTemplate
+
 
     // Scan t0 window
     for (Double_t t0 = candidateBin - cfg.fScanHalf;
@@ -507,76 +477,6 @@ static FitPulseResult fitSingleTemplate(
         }
     }
 
-    // ── Peak Optimization: parabolic sub-sample t0 refinement (Improvement 2) ──
-    // The scan above steps in fScanStep increments (default 0.25 samples), so
-    // the true chi² minimum can lie up to fScanStep/2 away from best.timeSample.
-    // A mis-timed template peak causes A to be pulled high (amplitude inflation).
-    //
-    // Fix: fit a parabola through the three chi² values centred on best.timeSample
-    // (at t0-h, t0, t0+h where h = fScanStep) and find its vertex analytically.
-    // Then re-solve the normal equations at the refined t0. Accept the refinement
-    // only when it lowers chi²/NDF (guards against numerical noise on flat surfaces).
-    if (cfg.fRefineT0 && best.valid) {
-        const Double_t h   = cfg.fScanStep;   // same step used in the scan
-        const Double_t t0c = best.timeSample; // current best (on grid)
-
-        // Reusable lambda: computes chi²/NDF and the analytic (b, A) at a given t0.
-        // Returns {chi2ndf, b, A}; chi2ndf = DBL_MAX when det ~ 0 or A <= 0.
-        auto evalPoint = [&](Double_t t0,
-                             Double_t& b_out,
-                             Double_t& A_out) -> Double_t
-        {
-            Double_t S1=0, Sf=0, Sf2=0, Sy=0, Syf=0, Sy2=0;
-            for (Int_t i = fitLo; i <= fitHi; ++i) {
-                const Double_t f     = tmpl.eval(static_cast<Double_t>(i) - t0);
-                const Double_t invs2 = 1.0 / (sigma[i - fitLo] * sigma[i - fitLo]);
-                S1  += invs2;                          Sf  += f * invs2;
-                Sf2 += f * f * invs2;                  Sy  += wfResidual[i] * invs2;
-                Syf += wfResidual[i] * f * invs2;      Sy2 += wfResidual[i] * wfResidual[i] * invs2;
-            }
-            const Double_t det = S1 * Sf2 - Sf * Sf;
-            if (std::abs(det) < 1e-12) {
-                b_out = 0.0; A_out = 0.0;
-                return std::numeric_limits<Double_t>::max();
-            }
-            b_out = (Sy * Sf2 - Syf * Sf) / det;
-            A_out = (S1 * Syf - Sf  * Sy)  / det;
-            if (A_out <= 0.0) {
-                return std::numeric_limits<Double_t>::max();
-            }
-            const Double_t chi2 = Sy2 - 2*b_out*Sy - 2*A_out*Syf
-                                  + b_out*b_out*S1 + 2*b_out*A_out*Sf + A_out*A_out*Sf2;
-            return chi2 / std::max(nPts - 2, 1);
-        };
-
-        // Evaluate chi² at t0c-h and t0c+h (t0c itself is already known: best.chi2ndf)
-        Double_t bm, Am, bp, Ap;
-        const Double_t chi2m = evalPoint(t0c - h, bm, Am);
-        const Double_t chi2c = best.chi2ndf;                // already computed in scan
-        const Double_t chi2p = evalPoint(t0c + h, bp, Ap);
-
-        // Parabolic vertex: t_min = t0c - h/2 * (chi2p - chi2m) / (chi2m - 2*chi2c + chi2p)
-        const Double_t denom = chi2m - 2.0 * chi2c + chi2p;
-        if (std::abs(denom) > 1e-12) {
-            Double_t t0_refined = t0c - 0.5 * h * (chi2p - chi2m) / denom;
-            // Clamp to the original scan range to avoid wild extrapolation
-            t0_refined = std::max(t0_refined, candidateBin - cfg.fScanHalf);
-            t0_refined = std::min(t0_refined, candidateBin + cfg.fScanHalf);
-
-            // Re-solve normal equations at the refined t0
-            Double_t b_ref, A_ref;
-            const Double_t chi2_ref = evalPoint(t0_refined, b_ref, A_ref);
-
-            // Accept only if the refined point actually improves chi²/NDF
-            if (chi2_ref < best.chi2ndf) {
-                best.timeSample = t0_refined;
-                best.amplitude  = A_ref;
-                best.baseline   = b_ref;
-                best.chi2ndf    = chi2_ref;
-            }
-        }
-    }
-    // ── End Peak Optimization: parabolic t0 refinement ─────────────────────────────
 
     return best;
 }
@@ -665,20 +565,6 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
                 cfg);
 
         fit.mfAmplitude = peak.mfAmplitude;
-
-        // ── Peak Optimization: record observed local peak amplitude (added) ────────
-        // Scan the residual waveform inside the fit window *before* this pulse is
-        // subtracted to obtain the actual measured maximum. Store it for diagnostics:
-        // if fit.amplitude >> fit.peakAmplitude, the template is too sharp for this
-        // pulse shape and the smear sigma should be increased.
-        {
-            Double_t locMax = 0.0;
-            for (Int_t i = fitLo; i <= fitHi; ++i) {
-                if (wfResidual[i] > locMax) locMax = wfResidual[i];
-            }
-            fit.peakAmplitude = locMax;
-        }
-        // ── End Peak Optimization: observed local peak amplitude ──────────────────
 
         // Calculate the pulse integral: Integral = amplitude * area(template)
         fit.integral = fit.amplitude * templateArea;
