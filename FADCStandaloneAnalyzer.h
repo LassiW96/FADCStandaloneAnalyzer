@@ -110,6 +110,32 @@ struct TemplateAnalysisConfig {
     Int_t    fRefitMaxIter      = 3;     // max refinement iterations (0 = disable)
     Double_t fRefitConvergence  = 0.01;  // stop when |Δchi2_total/chi2_total| < this
 
+    // ── Second-derivative peak finder ────────────────────────────────────────────
+    // These fields are used by AnalyzeWithD2(). They have no effect on
+    // the legacy AnalyzeWithTemplate() matched-filter path.
+
+    // Gaussian pre-smoothing kernel half-width (samples).
+    // The smoothing sigma is fSmoothHalfWidth / 2.0 samples.
+    Int_t    fSmoothHalfWidth      = 3;
+
+    // Significance level for the auto-scaled d2 threshold.
+    // The threshold is computed as fD2ThresholdNSigma * sigma_d2, where sigma_d2
+    // is the RMS of the second derivative in the pedestal region.
+    Double_t fD2ThresholdNSigma    = 5.0;
+
+    // Minimum separation between second-derivative minima within a cluster
+    // to count as distinct pulses (samples).
+    Int_t    fD2MinPeakSep         = 3;
+
+};
+
+// Second-derivative cluster: a contiguous region of interest (ROI) where the
+// second derivative falls below the noise threshold, indicating one or more
+// overlapping pulses.
+struct D2Cluster {
+    Int_t    roiStart;      // first sample index of the ROI
+    Int_t    roiEnd;        // last  sample index of the ROI
+    Int_t    nPulses;       // number of d2 minima (= pulse candidates) in this cluster
 };
 
 // FADC Template (kernal for Matched Filter)
@@ -177,6 +203,8 @@ struct FitPulseResult {
     Double_t fittedTau;     // Stage-2 fitted exponential tau in sample units  (0.0 for Stage-1)
     Int_t    fitStage;      // 1 = fixed-template scan accepted, 2 = Minuit fallback used
     Bool_t   valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
+    Int_t    clusterID        = -1;  // -1 if MF path; >=0 for D2 cluster index
+    Int_t    nPulsesInCluster = 1;   // how many pulses share this cluster (1 = isolated)
 };
 
 struct FADCPulseWF {
@@ -187,6 +215,8 @@ struct FADCPulseWF {
     // Diagnostics
     std::vector<Double_t> wfPS;
     std::vector<Double_t> mfOut;
+    std::vector<Double_t> d2Out;              // second-derivative trace (empty if MF path)
+    std::vector<D2Cluster> clusters;          // D2 cluster info (empty if MF path)
 };
 
 class FADCStandaloneAnalyzer {
@@ -219,6 +249,16 @@ public:
   FADCPulseWF AnalyzeWithTemplate(const std::vector<Double_t>& samples,
                                   const FADCTemplate&          tmpl,
                                   const TemplateAnalysisConfig& cfg = TemplateAnalysisConfig{}) const;
+
+  // Second-derivative based analysis — fully template-free.
+  // Peak finding via second derivative of the (optionally smoothed) waveform.
+  // Fitting via direct EMG model (Minuit, no template shape required).
+  static std::vector<Double_t> computeSecondDerivative(
+          const std::vector<Double_t>& wfPS,
+          Int_t smoothHalfWidth = 3);
+
+  FADCPulseWF AnalyzeWithD2(const std::vector<Double_t>& samples,
+                            const TemplateAnalysisConfig& cfg = TemplateAnalysisConfig{}) const;
 
 private:
   FADCConfig fConfig;
