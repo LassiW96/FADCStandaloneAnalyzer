@@ -5,6 +5,9 @@
 #include <cmath>        // std::sqrt, std::abs, std::exp
 #include <limits>       // std::numeric_limits
 #include <stdexcept>    // std::runtime_error
+#include <Math/Minimizer.h>
+#include <Math/Factory.h>
+#include <Math/Functor.h>
 
 FADCStandaloneAnalyzer::FADCStandaloneAnalyzer() 
 {
@@ -394,7 +397,68 @@ static std::vector<MFPeak> findMFPeaks(
     return peaks;
 }
 
-static FitPulseResult fitSingleTemplate(
+// ---------------------------------------------------------------------------
+// evalRawEMG — file-local helper used by EMGFitFunctor and AnalyzeWithTemplate.
+// Evaluates the raw (unnormalized) EMG pulse shape at time offset dt,
+// with Gaussian sigma and exponential tau, both in sample units.
+// Returns 0 for unphysical parameters or negligibly small values.
+// ---------------------------------------------------------------------------
+static Double_t evalRawEMG(Double_t dt, Double_t sigma, Double_t tau) {
+    if (sigma <= 0.0 || tau <= 0.0) return 0.0;
+    Double_t s2_2t2  = (sigma * sigma) / (2.0 * tau * tau);
+    Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+    Double_t val = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
+    return (val > 1e-12) ? val : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// EMGFitFunctor — chi2 callable for Stage-2 Minuit fit.
+// Parameters: [0]=A (scale, raw), [1]=b (baseline), [2]=t0,
+//             [3]=sigma (sample units), [4]=tau (sample units).
+// Note: A here is the scale of the *unnormalized* EMG; the physical peak
+// amplitude is computed post-convergence in fitStage2Template.
+// ---------------------------------------------------------------------------
+struct EMGFitFunctor {
+    const std::vector<Double_t>* wfResidual;
+    Int_t    fitLo;
+    Int_t    fitHi;
+    Double_t minSigma;
+    Double_t adcPerMV;
+    Double_t noiseSigma;
+
+    Double_t operator()(const Double_t *par) const {
+        Double_t A     = par[0];
+        Double_t b     = par[1];
+        Double_t t0    = par[2];
+        Double_t sigma = par[3];
+        Double_t tau   = par[4];
+
+        Double_t chi2 = 0.0;
+        for (Int_t i = fitLo; i <= fitHi; ++i) {
+            Double_t dt  = static_cast<Double_t>(i) - t0;
+            Double_t f   = evalRawEMG(dt, sigma, tau);
+            Double_t expected = b + A * f;
+            Double_t s_shot = std::sqrt(std::abs((*wfResidual)[i]) * adcPerMV / 2.0) / adcPerMV;
+            Double_t sig = std::sqrt(s_shot * s_shot + noiseSigma * noiseSigma);
+            if (sig < minSigma) sig = minSigma;
+            Double_t residual = ((*wfResidual)[i] - expected) / sig;
+            chi2 += residual * residual;
+        }
+        return chi2;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// fitStage1Template — Stage-1 fast fit.
+//
+// Performs an analytical 2-parameter (A, b) scan over the fixed template shape.
+// For each t0 in [candidateBin - fScanHalf, candidateBin + fScanHalf] at
+// fScanStep resolution the weighted normal equations are solved exactly:
+//   [ S1  Sf  ] [b]   [Sy ]
+//   [ Sf  Sf2 ] [A] = [Syf]
+// giving chi2 = sum((y - b - A*f)^2 / sigma_i^2) with NDF = nPts - 2.
+// ---------------------------------------------------------------------------
+static FitPulseResult fitStage1Template(
         const std::vector<Double_t>& wfResidual,
         const FADCTemplate&          tmpl,
         Double_t                     candidateBin,
@@ -407,32 +471,35 @@ static FitPulseResult fitSingleTemplate(
     fitHi = std::min(fitHi, N - 1);
     Int_t nPts = fitHi - fitLo + 1;
 
-    // Per-sample sigma — sized to fit window only, accessed as sigma[i - fitLo]
+    // Per-sample sigma — accessed as sigma[i - fitLo]
     std::vector<Double_t> sigma(nPts, cfg.fMinSigma);
     for (Int_t i = fitLo; i <= fitHi; ++i) {
-        Double_t s = std::sqrt(std::abs(wfResidual[i]) * cfg.fAdcPerMV / 2.0)
-                     / cfg.fAdcPerMV;
+        Double_t s_shot = std::sqrt(std::abs(wfResidual[i]) * cfg.fAdcPerMV / 2.0)
+                          / cfg.fAdcPerMV;
+        Double_t s = std::sqrt(s_shot * s_shot + cfg.fNoiseSigmaADC * cfg.fNoiseSigmaADC);
         sigma[i - fitLo] = (s > cfg.fMinSigma) ? s : cfg.fMinSigma;
     }
 
     FitPulseResult best;
     best.valid         = kFALSE;
     best.chi2ndf       = std::numeric_limits<Double_t>::max();
+    best.chi2ndf_s1    = std::numeric_limits<Double_t>::max();
     best.timeSample    = candidateBin;
-    best.timeHalfMax   = candidateBin;   // placeholder; computed in AnalyzeWithTemplate
+    best.timeHalfMax   = candidateBin;
     best.amplitude     = 0.0;
     best.integral      = 0.0;
     best.baseline      = 0.0;
     best.mfAmplitude   = 0.0;
-
+    best.fitStage      = 1;
+    best.fittedSigma   = 0.0;
+    best.fittedTau     = 0.0;
 
     // Scan t0 window
     for (Double_t t0 = candidateBin - cfg.fScanHalf;
                   t0 <= candidateBin + cfg.fScanHalf;
                   t0 += cfg.fScanStep) {
 
-        // Accumulate normal-equation sums and chi2 in a single pass
-        // (avoids calling tmpl.eval() twice per sample per t0 step)
+        // Accumulate normal-equation sums in a single pass
         Double_t S1  = 0.0, Sf  = 0.0, Sf2 = 0.0;
         Double_t Sy  = 0.0, Syf = 0.0;
 
@@ -446,19 +513,16 @@ static FitPulseResult fitSingleTemplate(
             Syf += wfResidual[i] * f * invs2;
         }
 
-        // Solve the 2x2 system for (baseline b, amplitude A)
+        // Solve the 2×2 system for (baseline b, amplitude A)
         Double_t det = S1 * Sf2 - Sf * Sf;
         if (std::abs(det) < 1e-12) continue;
 
         Double_t b = (Sy * Sf2 - Syf * Sf) / det;   // baseline
         Double_t A = (S1 * Syf - Sf  * Sy) / det;   // amplitude
 
-        if (A <= 0.0) continue;  // unphysical -- skip
+        if (A <= 0.0) continue;  // unphysical — skip
 
-        // chi2 — second pass eliminated: derive directly from the normal-equation sums
-        //   chi2 = sum[ (y - b - A*f)^2 / sigma^2 ]
-        //        = Sy_y2 - 2b*Sy - 2A*Syf + b^2*S1 + 2bA*Sf + A^2*Sf2
-        // We still need sum(y^2/sigma^2), compute it here
+        // chi2 derived from the normal-equation sums (second pass for Sy2 only)
         Double_t Sy2 = 0.0;
         for (Int_t i = fitLo; i <= fitHi; ++i) {
             Double_t invs2 = 1.0 / (sigma[i - fitLo] * sigma[i - fitLo]);
@@ -470,15 +534,271 @@ static FitPulseResult fitSingleTemplate(
 
         if (chi2ndf < best.chi2ndf) {
             best.chi2ndf    = chi2ndf;
+            best.chi2ndf_s1 = chi2ndf;
             best.timeSample = t0;
             best.amplitude  = A;
             best.baseline   = b;
             best.valid      = kTRUE;
         }
     }
+    return best;
+}
 
+// ---------------------------------------------------------------------------
+// fitStage2Template — Stage-2 full Minuit2 fit (5 free parameters).
+//
+// wfPeakBin is the estimated waveform-peak sample (= Stage-1 t0 + peakBin,
+// or the original MF peak position).  The initial t0 for Minuit is computed
+// as wfPeakBin - sigma_init^2/tau_init so that the seeded EMG peaks near
+// the known waveform peak.
+//
+// Post-convergence the raw Minuit amplitude A_raw (scale of the unnormalized
+// EMG) is converted to the physical peak ADC count:
+//   amplitude = A_raw * max_i(emgRaw(i - t0, sigma, tau))  over the fit window
+// so that Stage-2 amplitude is in the same units as Stage-1 amplitude.
+// NDF = nPts - 5.
+// ---------------------------------------------------------------------------
+static FitPulseResult fitStage2Template(
+        const std::vector<Double_t>& wfResidual,
+        const FADCTemplate&          tmpl,
+        Double_t                     wfPeakBin,
+        Int_t                        fitLo,
+        Int_t                        fitHi,
+        const TemplateAnalysisConfig& cfg)
+{
+    Int_t N = static_cast<Int_t>(wfResidual.size());
+    fitLo = std::max(fitLo, 0);
+    fitHi = std::min(fitHi, N - 1);
+    Int_t nPts = fitHi - fitLo + 1;
+
+    FitPulseResult best;
+    best.valid         = kFALSE;
+    best.chi2ndf       = std::numeric_limits<Double_t>::max();
+    best.chi2ndf_s1    = std::numeric_limits<Double_t>::max();
+    best.timeSample    = wfPeakBin - static_cast<Double_t>(tmpl.peakBin);  // fallback
+    best.timeHalfMax   = best.timeSample;
+    best.amplitude     = 0.0;
+    best.integral      = 0.0;
+    best.baseline      = 0.0;
+    best.mfAmplitude   = 0.0;
+    best.fitStage      = 2;
+    best.fittedSigma   = 0.0;
+    best.fittedTau     = 0.0;
+
+    std::unique_ptr<ROOT::Math::Minimizer> min(
+        ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
+    if (!min) return best;
+
+    min->SetMaxFunctionCalls(1000);
+    min->SetTolerance(0.1);
+    min->SetPrintLevel(0);
+
+    EMGFitFunctor chi2Functor{&wfResidual, fitLo, fitHi, cfg.fMinSigma, cfg.fAdcPerMV, cfg.fNoiseSigmaADC};
+    ROOT::Math::Functor functor(chi2Functor, 5);
+    min->SetFunction(functor);
+
+    // Rough amplitude seed from the residual window
+    Double_t maxVal = 0.0;
+    for (Int_t i = fitLo; i <= fitHi; ++i)
+        if (wfResidual[i] > maxVal) maxVal = wfResidual[i];
+
+    // Nominal sigma and tau in sample units (sigma=5 ns, tau=10 ns at 4 ns/sample)
+    const Double_t initSigma = 1.25;
+    const Double_t initTau   = 2.5;
+
+    // Seed t0 so that the initial EMG peaks near the known waveform peak.
+    // The raw EMG peaks at dt = sigma²/tau, i.e. i = t0 + sigma²/tau.
+    // Therefore t0_init = wfPeakBin - sigma_init²/tau_init.
+    Double_t initT0 = wfPeakBin - (initSigma * initSigma / initTau);
+
+    min->SetLimitedVariable(0, "Amplitude", maxVal,    maxVal * 0.1, 0.0,                      maxVal * 3.0);
+    min->SetLimitedVariable(1, "Baseline",  0.0,       1.0,          -20.0,                    20.0);
+    min->SetLimitedVariable(2, "t0",        initT0,    0.5,          initT0 - cfg.fScanHalf,   initT0 + cfg.fScanHalf);
+    min->SetLimitedVariable(3, "Sigma",     initSigma, 0.1,          0.1,                      5.0);
+    min->SetLimitedVariable(4, "Tau",       initTau,   0.2,          0.5,                      15.0);
+
+    min->Minimize();
+
+    if (min->Status() == 0 || min->Status() == 1) {
+        const Double_t *xs = min->X();
+        Double_t A_raw  = xs[0];
+        Double_t t0     = xs[2];
+        Double_t sigma  = xs[3];
+        Double_t tau    = xs[4];
+
+        // Find the peak of the raw (unnormalized) EMG over the fit window.
+        // This converts A_raw (scale of unnormalized EMG) to the physical peak
+        // ADC count so that Stage-2 amplitude has the same meaning as Stage-1.
+        Double_t emgPeakRaw = 0.0;
+        for (Int_t i = fitLo; i <= fitHi; ++i) {
+            Double_t f = evalRawEMG(static_cast<Double_t>(i) - t0, sigma, tau);
+            if (f > emgPeakRaw) emgPeakRaw = f;
+        }
+        if (emgPeakRaw < 1e-12) emgPeakRaw = 1.0;  // guard against degenerate fit
+
+        best.amplitude   = A_raw * emgPeakRaw;  // physical peak ADC count
+        best.baseline    = xs[1];
+        best.timeSample  = t0;
+        best.fittedSigma = sigma;
+        best.fittedTau   = tau;
+
+        Double_t chi2 = min->MinValue();
+        Int_t ndf = std::max(nPts - 5, 1);  // 5 free parameters
+        best.chi2ndf = chi2 / ndf;
+        best.valid   = kTRUE;
+    }
 
     return best;
+}
+
+// ---------------------------------------------------------------------------
+// fitSingleTemplate — two-stage dispatcher.
+//
+// Always runs Stage 1 first (fast 2-parameter fixed-template analytical scan).
+// If Stage 1 chi2/ndf <= cfg.fStage2Chi2Threshold the result is returned
+// immediately.  Otherwise Stage 2 (Minuit2 with all 5 free parameters) is
+// invoked, seeded with the waveform-peak position from Stage 1.
+// If Stage 2 fails to converge but Stage 1 produced a valid result, Stage 1
+// is returned as a fallback.
+// ---------------------------------------------------------------------------
+static FitPulseResult fitSingleTemplate(
+        const std::vector<Double_t>& wfResidual,
+        const FADCTemplate&          tmpl,
+        Double_t                     candidateBin,
+        Int_t                        fitLo,
+        Int_t                        fitHi,
+        const TemplateAnalysisConfig& cfg)
+{
+    // --- Stage 1: fast 2-parameter fixed-template scan ---
+    FitPulseResult s1 = fitStage1Template(wfResidual, tmpl, candidateBin, fitLo, fitHi, cfg);
+
+    if (s1.valid && s1.chi2ndf <= cfg.fStage2Chi2Threshold)
+        return s1;  // good fit — Stage 1 accepted
+
+    // --- Stage 2: full Minuit2 fit ---
+    // Seed the waveform-peak position from Stage 1 where available,
+    // otherwise fall back to the MF candidate.
+    Double_t wfPeakBin = s1.valid
+        ? (s1.timeSample + static_cast<Double_t>(tmpl.peakBin))
+        : (candidateBin  + static_cast<Double_t>(tmpl.peakBin));
+
+    FitPulseResult s2 = fitStage2Template(wfResidual, tmpl, wfPeakBin, fitLo, fitHi, cfg);
+    s2.chi2ndf_s1 = s1.chi2ndf;  // preserve Stage-1 chi2 as diagnostic
+
+    // If Stage 2 also failed but Stage 1 was valid, fall back to Stage 1
+    if (!s2.valid && s1.valid)
+        return s1;
+
+    return s2;
+}
+
+// ---------------------------------------------------------------------------
+// addPulseContribution — add or subtract a fitted pulse's model from a waveform.
+//
+// sign = +1.0 to add back (restore), -1.0 to subtract (peel).
+// Handles both Stage 1 (fixed template) and Stage 2 (fitted EMG) models.
+// ---------------------------------------------------------------------------
+static void addPulseContribution(
+        std::vector<Double_t>&  wf,
+        const FitPulseResult&   pulse,
+        const FADCTemplate&     tmpl,
+        Double_t                sign)
+{
+    Int_t N = static_cast<Int_t>(wf.size());
+    if (pulse.fitStage == 1 || pulse.fittedSigma == 0.0) {
+        for (Int_t i = 0; i < N; ++i) {
+            Double_t f = tmpl.eval(static_cast<Double_t>(i) - pulse.timeSample);
+            wf[i] += sign * pulse.amplitude * f;
+        }
+    } else {
+        // Stage 2: normalised raw EMG
+        Double_t emgPeakRaw = 0.0;
+        for (Int_t i = 0; i < N; ++i) {
+            Double_t f = evalRawEMG(
+                static_cast<Double_t>(i) - pulse.timeSample,
+                pulse.fittedSigma, pulse.fittedTau);
+            if (f > emgPeakRaw) emgPeakRaw = f;
+        }
+        if (emgPeakRaw < 1e-12) emgPeakRaw = 1.0;
+        for (Int_t i = 0; i < N; ++i) {
+            Double_t f = evalRawEMG(
+                static_cast<Double_t>(i) - pulse.timeSample,
+                pulse.fittedSigma, pulse.fittedTau) / emgPeakRaw;
+            wf[i] += sign * pulse.amplitude * f;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// computePulseDerivedQuantities — compute integral, timeHalfMax, and peak
+// position for a FitPulseResult.  Called after each fit (initial or re-fit).
+//
+// wfForTiming: the waveform (residual) used for half-max timing extraction.
+//              Should have this pulse present but other pulses subtracted.
+// ---------------------------------------------------------------------------
+static void computePulseDerivedQuantities(
+        FitPulseResult&              fit,
+        const std::vector<Double_t>& wfForTiming,
+        const FADCTemplate&          tmpl,
+        Double_t                     templateArea,
+        const TemplateAnalysisConfig& cfg)
+{
+    Int_t N = static_cast<Int_t>(wfForTiming.size());
+
+    // ── Integral ──────────────────────────────────────────────────────────
+    if (fit.fitStage == 1 || fit.fittedSigma == 0.0) {
+        fit.integral = fit.amplitude * templateArea;
+    } else {
+        Double_t emgAreaRaw = 0.0;
+        Double_t emgPeakRaw = 0.0;
+        Int_t nTmpl = static_cast<Int_t>(tmpl.shape.size());
+        for (Int_t i = 0; i < nTmpl; ++i) {
+            Double_t dt = static_cast<Double_t>(i) - static_cast<Double_t>(tmpl.peakBin);
+            Double_t f  = evalRawEMG(dt, fit.fittedSigma, fit.fittedTau);
+            emgAreaRaw += f;
+            if (f > emgPeakRaw) emgPeakRaw = f;
+        }
+        if (emgPeakRaw < 1e-12) emgPeakRaw = 1.0;
+        fit.integral = fit.amplitude * emgAreaRaw / emgPeakRaw;
+    }
+
+    // ── Half-max rising-edge crossing (CFD-style timing) ──────────────────
+    Int_t wfPeak;
+    if (fit.fitStage == 1 || fit.fittedSigma == 0.0) {
+        wfPeak = static_cast<Int_t>(fit.timeSample) + tmpl.peakBin;
+    } else {
+        wfPeak = static_cast<Int_t>(std::round(
+            fit.timeSample + fit.fittedSigma * fit.fittedSigma / fit.fittedTau));
+    }
+    Int_t    hLo     = std::max(0,   wfPeak - cfg.fFitMargin);
+    Int_t    hHi     = std::min(N-1, wfPeak + cfg.fFitMargin);
+    Double_t locPeak = 0.0;
+    Int_t    locBin  = wfPeak;
+    for (Int_t i = hLo; i <= hHi; ++i) {
+        if (wfForTiming[i] > locPeak) { locPeak = wfForTiming[i]; locBin = i; }
+    }
+    Double_t vMid    = locPeak / 2.0;
+    Double_t halfMax = static_cast<Double_t>(locBin);  // fallback: peak bin
+    for (Int_t i = hLo; i < locBin; ++i) {
+        if (wfForTiming[i] <= vMid && wfForTiming[i + 1] > vMid) {
+            halfMax = i + (vMid - wfForTiming[i])
+                          / (wfForTiming[i + 1] - wfForTiming[i]);
+            break;
+        }
+    }
+    fit.timeHalfMax = halfMax;
+}
+
+// ---------------------------------------------------------------------------
+// getPulsePeakPosition — compute the waveform-peak sample position for a pulse.
+// Stage 1: timeSample + peakBin.   Stage 2: timeSample + sigma²/tau.
+// ---------------------------------------------------------------------------
+static Double_t getPulsePeakPosition(const FitPulseResult& fit,
+                                     const FADCTemplate&   tmpl)
+{
+    if (fit.fitStage == 1 || fit.fittedSigma == 0.0)
+        return fit.timeSample + static_cast<Double_t>(tmpl.peakBin);
+    return fit.timeSample + fit.fittedSigma * fit.fittedSigma / fit.fittedTau;
 }
 
 // Top-level analysis
@@ -493,21 +813,61 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
     Int_t N = static_cast<Int_t>(samples.size());
     if (N == 0) return result;
 
-    // 1. Pedestal
+    // 1. Pedestal — noise-aware front vs tail selection
     Int_t    nPed = std::min(cfg.fNPedSamples, N);
-    Double_t ped  = 0.0;
-    Double_t ped2 = 0.0;
+
+    // Compute front pedestal mean and sample variance
+    Double_t ped = 0.0;
     for (Int_t i = 0; i < nPed; ++i) ped += samples[i];
     ped /= nPed;
+    Double_t pedVar = 0.0;
+    for (Int_t i = 0; i < nPed; ++i) {
+        Double_t d = samples[i] - ped;
+        pedVar += d * d;
+    }
+    pedVar /= (nPed > 1) ? (nPed - 1) : 1;
+
+    // Compute tail pedestal mean and sample variance
+    Double_t ped2 = 0.0;
     for (Int_t i = N - nPed; i < N; ++i) ped2 += samples[i];
     ped2 /= nPed;
+    Double_t ped2Var = 0.0;
+    for (Int_t i = N - nPed; i < N; ++i) {
+        Double_t d = samples[i] - ped2;
+        ped2Var += d * d;
+    }
+    ped2Var /= (nPed > 1) ? (nPed - 1) : 1;
 
-    // Use the lower of front/tail pedestals (same logic as Analyze())
-    result.pedestal = (ped2 < ped) ? ped2 : ped;
+    // Estimate electronic noise from the lower-mean pedestal region
+    // (less likely to be contaminated by a pulse signal)
+    Double_t pedNoiseSigma = std::sqrt((ped <= ped2) ? pedVar : ped2Var);
+
+    // If noise is significant, compare front/tail statistically.
+    // When they agree within 3× the expected std error of their difference,
+    // average them for better precision (eliminates min-of-two downward bias).
+    // Otherwise one region likely contains a pulse — use the lower one.
+    if (pedNoiseSigma > 1e-6) {
+        Double_t diffThreshold = 3.0 * pedNoiseSigma * std::sqrt(2.0 / nPed);
+        if (std::abs(ped - ped2) > diffThreshold) {
+            result.pedestal = std::min(ped, ped2);
+        } else {
+            result.pedestal = (ped + ped2) / 2.0;
+        }
+    } else {
+        // Noise is negligible — min is exact, no bias
+        result.pedestal = std::min(ped, ped2);
+    }
 
     // Subtract the chosen pedestal consistently
     std::vector<Double_t> wfPS(N);
     for (Int_t i = 0; i < N; ++i) wfPS[i] = samples[i] - result.pedestal;
+
+    // Auto-estimate electronic noise for the per-sample error model (Cause 2 fix).
+    // When fNoiseSigmaADC < 0 (default), use the pedestal-derived noise estimate.
+    TemplateAnalysisConfig localCfg = cfg;
+    if (localCfg.fNoiseSigmaADC < 0.0) {
+        localCfg.fNoiseSigmaADC = pedNoiseSigma;
+    }
 
     // 2. Matched filter
     std::vector<Double_t> mfOut = computeMatchedFilter(wfPS, tmpl, cfg);
@@ -548,10 +908,9 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
         }
         if (tooClose) continue;
 
-        // Local fit window around the candidate peak — prevents the baseline
-        // from absorbing the signal when most of the waveform is flat noise.
-        Int_t fitLo = std::max(0, static_cast<Int_t>(peak.position) - cfg.fFitMargin);
-        Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peak.position) + cfg.fFitMargin);
+        // Local fit window around the candidate peak
+        Int_t fitLo = std::max(0, static_cast<Int_t>(peak.position) - localCfg.fFitMargin);
+        Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peak.position) + localCfg.fFitMargin);
 
         // The MF peak position is the waveform pulse-peak sample.  The template
         // eval(i - t0) peaks at (t0 + peakBin), so the correct t0 to scan around
@@ -562,59 +921,94 @@ FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithTemplate(
                 wfResidual, tmpl,
                 candidateBin,
                 fitLo, fitHi,
-                cfg);
+                localCfg);
 
         fit.mfAmplitude = peak.mfAmplitude;
 
-        // Calculate the pulse integral: Integral = amplitude * area(template)
-        fit.integral = fit.amplitude * templateArea;
-
-        // ── Half-max rising-edge crossing (CFD-style timing) ──────────────
-        // Mirrors the waveformGenerator truth-timing logic (L235-243) but
-        // restricted to the local fit window so pile-up pulses don't
-        // contaminate the amplitude reference.
-        // Operates on wfResidual *before* subtracting this pulse so the
-        // local peak amplitude is still visible.
-        {
-            // Centre the half-max search window on the actual waveform peak
-            // (fit.timeSample + peakBin), not on t0 (fit.timeSample).
-            Int_t    wfPeak  = static_cast<Int_t>(fit.timeSample) + tmpl.peakBin;
-            Int_t    hLo     = std::max(0,   wfPeak - cfg.fFitMargin);
-            Int_t    hHi     = std::min(N-1, wfPeak + cfg.fFitMargin);
-            Double_t locPeak = 0.0;
-            Int_t    locBin  = wfPeak;
-            for (Int_t i = hLo; i <= hHi; ++i) {
-                if (wfResidual[i] > locPeak) { locPeak = wfResidual[i]; locBin = i; }
-            }
-            Double_t vMid   = locPeak / 2.0;
-            Double_t halfMax = static_cast<Double_t>(locBin);  // fallback: peak bin
-            for (Int_t i = hLo; i < locBin; ++i) {
-                if (wfResidual[i] <= vMid && wfResidual[i + 1] > vMid) {
-                    halfMax = i + (vMid - wfResidual[i])
-                                  / (wfResidual[i + 1] - wfResidual[i]);
-                    break;
-                }
-            }
-            fit.timeHalfMax = halfMax;
-        }
-
-        if (!fit.valid || fit.amplitude < cfg.fAmpCutADC) {
+        if (!fit.valid || fit.amplitude < localCfg.fAmpCutADC) {
             continue;   // skip noise — don't store or subtract
         }
 
-        // Subtract ONLY the fitted pulse shape from the residual.
-        // The baseline b is a local nuisance parameter (DC offset within the fit
-        // window) — subtracting it globally would shift the entire waveform and
-        // corrupt later fits.
-        for (Int_t i = 0; i < N; ++i) {
-            Double_t f = tmpl.eval(static_cast<Double_t>(i) - fit.timeSample);
-            wfResidual[i] -= fit.amplitude * f;
-        }
+        // Compute integral and timing before subtracting
+        computePulseDerivedQuantities(fit, wfResidual, tmpl, templateArea, localCfg);
 
-        // Store the waveform-peak position for separation checks (same space as peak.position).
-        fittedPositions.push_back(fit.timeSample + static_cast<Double_t>(tmpl.peakBin));
+        // Subtract this pulse from the residual
+        addPulseContribution(wfResidual, fit, tmpl, -1.0);
+
+        fittedPositions.push_back(getPulsePeakPosition(fit, tmpl));
         result.pulses.push_back(fit);
         result.nPulses++;
+    }
+
+    // 5. Iterative re-fitting (coordinate descent for pileup resolution)
+    //    Each pulse is added back, re-fitted against the clean residual
+    //    (all other pulses subtracted), then the new fit is subtracted.
+    //    Convergence is checked on the total chi2 across all pulses.
+    if (localCfg.fRefitMaxIter > 0 && result.nPulses >= 2) {
+
+        for (Int_t iter = 0; iter < localCfg.fRefitMaxIter; ++iter) {
+
+            // Compute previous total chi2 for convergence check
+            Double_t prevTotalChi2 = 0.0;
+            for (const auto& p : result.pulses)
+                prevTotalChi2 += p.chi2ndf;
+
+            // Process pulses strongest-first (sort by amplitude descending)
+            std::vector<Int_t> order(result.nPulses);
+            for (Int_t i = 0; i < result.nPulses; ++i) order[i] = i;
+            std::sort(order.begin(), order.end(),
+                      [&](Int_t a, Int_t b) {
+                          return result.pulses[a].amplitude > result.pulses[b].amplitude;
+                      });
+
+            for (Int_t idx : order) {
+                FitPulseResult& pulse = result.pulses[idx];
+
+                // 1. Add back this pulse's contribution to the residual
+                addPulseContribution(wfResidual, pulse, tmpl, +1.0);
+
+                // 2. Determine fit window from the current pulse's peak position
+                Double_t peakPos = getPulsePeakPosition(pulse, tmpl);
+                Int_t fitLo = std::max(0,     static_cast<Int_t>(peakPos) - localCfg.fFitMargin);
+                Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peakPos) + localCfg.fFitMargin);
+
+                // 3. Candidate bin for the scan
+                Double_t candidateBin = peakPos - static_cast<Double_t>(tmpl.peakBin);
+
+                // 4. Re-fit this pulse against the (now clean) residual
+                FitPulseResult refit = fitSingleTemplate(
+                        wfResidual, tmpl,
+                        candidateBin,
+                        fitLo, fitHi,
+                        localCfg);
+
+                // Preserve the original MF amplitude diagnostic
+                refit.mfAmplitude = pulse.mfAmplitude;
+
+                if (refit.valid && refit.amplitude >= localCfg.fAmpCutADC) {
+                    // Compute derived quantities with this pulse visible
+                    computePulseDerivedQuantities(refit, wfResidual, tmpl,
+                                                 templateArea, localCfg);
+                    // Accept the re-fit
+                    pulse = refit;
+                }
+                // else: keep the previous fit unchanged
+
+                // 5. Subtract the (possibly updated) pulse from the residual
+                addPulseContribution(wfResidual, pulse, tmpl, -1.0);
+            }
+
+            // Convergence check
+            Double_t newTotalChi2 = 0.0;
+            for (const auto& p : result.pulses)
+                newTotalChi2 += p.chi2ndf;
+
+            if (prevTotalChi2 > 0.0 &&
+                std::abs(newTotalChi2 - prevTotalChi2) / prevTotalChi2
+                    < localCfg.fRefitConvergence) {
+                break;  // converged
+            }
+        }
     }
 
     // Sort results chronologically for output

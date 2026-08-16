@@ -9,7 +9,8 @@
 
 namespace WaveformUtil {
     // Same math as the private spePulse, but now publicly accessible
-    Double_t spePulse(Double_t t, Double_t t0, Double_t tau_r, Double_t tau_f);
+    // Exponentially modified Gaussian (EMG) pulse shape
+    Double_t spePulse(Double_t t, Double_t t0, Double_t sigma, Double_t tau);
 }
 
 struct DigitizerParams {
@@ -29,8 +30,8 @@ struct DigitizerParams {
 
 // Structs for the waveform generator algorithm v2 - keep the safety values
 struct WaveformParams {
-    Double_t tau_r = 2.0;           // Rise time (ns)
-    Double_t tau_f = 5.0;          // Decay time (ns)
+    Double_t sigma_g = 1.5;         // Gaussian width for EMG pulse shape (ns)
+    Double_t tau = 5.0;             // Exponential decay constant for EMG (ns)
     Double_t tts_sigma = 1.5;       // Transit time spread (ns)
     Double_t mean_gain = 10.0;       // Mean amplitude per PE (mV)
     Double_t gain_sigma = 2.5;      // Gain variation (mV)
@@ -40,6 +41,12 @@ struct WaveformParams {
     Double_t ap_prob = 0.03;         // After pulse generation probability
     Double_t ap_delay_mean = 80.0;   // Mean delay for afterpulse (ns)
     Double_t ap_delay_sigma = 5.0;   // Spread in afterpulse delay (ns)
+
+    // Secondary pulse parameters (small echo after primary)
+    Bool_t   sp_enable = false;      // Enable secondary pulse generation
+    Double_t sp_delay = 10.0;        // Delay after primary pulse (ns)
+    Double_t sp_amplitude_frac = 0.1;// Fraction of primary PE count
+    Double_t sp_delay_sigma = 0.0;   // Jitter on delay (ns), 0 = fixed
 
     // Parameters needed for the initial algorithm
     Int_t pulse_width = 10;          // Pulse width in samples

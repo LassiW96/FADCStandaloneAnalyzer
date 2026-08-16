@@ -99,13 +99,36 @@ std::vector<Int_t> waveformGenerator::multiplePulseWaveform() const {
 
 // PE based waveform generators
 // Waveform generator v2 related functions - now the parameters are read from the object state
-Double_t WaveformUtil::spePulse(Double_t t, Double_t t0, Double_t tau_r, Double_t tau_f) {
-    if(t < t0) return 0.0;
-    return (std::exp(-(t - t0) / tau_f) - std::exp(-(t - t0) / tau_r));
+// Exponentially modified Gaussian (EMG) pulse shape.
+// Models a Gaussian (width sigma) convolved with an exponential decay (tau).
+// Returns unnormalized shape; the peak value depends on sigma and tau.
+Double_t WaveformUtil::spePulse(Double_t t, Double_t t0, Double_t sigma, Double_t tau) {
+    Double_t dt = t - t0;
+    Double_t arg_exp = (sigma * sigma) / (2.0 * tau * tau) - dt / tau;
+    Double_t arg_erfc = (sigma / tau - dt / sigma) / TMath::Sqrt(2.0);
+    return (1.0 / (2.0 * tau)) * std::exp(arg_exp) * TMath::Erfc(arg_erfc);
 }
 Double_t waveformGenerator::spePulse(Double_t t, Double_t t0, Double_t amp) const {
-    if(t < t0) return 0.0;
-    return amp * WaveformUtil::spePulse(t, t0, fWf.tau_r, fWf.tau_f);
+    // Evaluate the EMG shape and normalise so that the caller's 'amp'
+    // equals the peak height: divide by the shape's own peak value.
+    Double_t raw = WaveformUtil::spePulse(t, t0, fWf.sigma_g, fWf.tau);
+    // Peak of the EMG shape (evaluated once; the peak is near t0 + mode offset)
+    // Compute the mode analytically: mode ≈ t0  for small sigma/tau,
+    // but the exact peak depends on the ratio.  We evaluate numerically at
+    // t0 + tau*(1 - (sigma/tau)^2) when sigma < tau, else at t0.
+    static thread_local Double_t cached_sigma = -1, cached_tau = -1, cached_peak = -1;
+    if (cached_sigma != fWf.sigma_g || cached_tau != fWf.tau) {
+        // Scan for peak of the unit-amplitude EMG near its mode
+        Double_t best = 0.0;
+        for (Double_t s = 0.0; s < 10.0 * fWf.tau; s += 0.01) {
+            Double_t v = WaveformUtil::spePulse(t0 + s, t0, fWf.sigma_g, fWf.tau);
+            if (v > best) best = v;
+        }
+        cached_sigma = fWf.sigma_g;
+        cached_tau   = fWf.tau;
+        cached_peak  = best;
+    }
+    return (cached_peak > 0.0) ? amp * raw / cached_peak : 0.0;
 }
 
 Double_t waveformGenerator::squarePulse(Double_t t, Double_t t0, Double_t amp) const {
@@ -153,6 +176,25 @@ std::vector<waveformGenerator::PEHit> waveformGenerator::generatePEHits() const 
             hit.peTimes.push_back(hit.hitTime);
         }
         hits.push_back(hit);
+
+        // Secondary pulse: small echo after the primary hit
+        if (fWf.sp_enable && num_pes > 0) {
+            PEHit secHit;
+            Double_t delay = fWf.sp_delay;
+            if (fWf.sp_delay_sigma > 0.0) {
+                std::normal_distribution<Double_t> delay_jitter(fWf.sp_delay, fWf.sp_delay_sigma);
+                delay = delay_jitter(fRng);
+                if (delay < 0.0) delay = 0.0;
+            }
+            secHit.hitTime = hit.hitTime + delay;
+
+            // Scale PE count by amplitude fraction (at least 1 PE)
+            Int_t sec_pes = std::max(1, static_cast<Int_t>(std::round(num_pes * fWf.sp_amplitude_frac)));
+            for (Int_t i = 0; i < sec_pes; i++) {
+                secHit.peTimes.push_back(secHit.hitTime);
+            }
+            hits.push_back(secHit);
+        }
     }
     // Sort hits by arrival time
     std::sort(hits.begin(), hits.end(),
@@ -191,7 +233,7 @@ std::vector<Int_t> waveformGenerator::generateWaveform(PulseShape shape) {
         for(Int_t i = 0; i < fDaq.num_samples; i++) {
             Double_t current_time = i * fDaq.sample_rate;
             Double_t val = 0.0;
-            if(current_time > smeared_time - 5.0 && current_time < smeared_time + 50) {
+            if(current_time > smeared_time - 5.0 * fWf.sigma_g && current_time < smeared_time + 10.0 * fWf.tau) {
                 switch(shape) {
                     case PulseShape::SPE: 
                         val = spePulse(current_time, smeared_time, effective_amplitude); break;

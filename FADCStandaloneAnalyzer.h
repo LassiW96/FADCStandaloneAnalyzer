@@ -89,8 +89,26 @@ struct TemplateAnalysisConfig {
     Double_t fAdcPerMV     = 4.096; // ADC counts per mV
     Double_t fMinSigma     = 0.5;   // floor for per-sample sigma (ADC counts)
 
+    // Electronic noise sigma (ADC counts).  Added in quadrature with the
+    // shot-noise term in the per-sample error model:  σ² = σ_shot² + σ_elec².
+    // Negative (default) = auto-estimate from pedestal sample variance.
+    // Zero = disable (pure shot-noise model, legacy behaviour).
+    Double_t fNoiseSigmaADC = -1.0;
+
     // Amplitude quality cut
     Double_t fAmpCutADC    = 1.0;   // discard fitted pulses below this amplitude
+
+    // Two-stage fitting threshold
+    // Stage 1 is the fast 2-parameter (A, b) fixed-template scan.
+    // If its chi2/ndf exceeds this value Stage 2 (Minuit with all 5 parameters) is invoked.
+    Double_t fStage2Chi2Threshold = 5.0;
+
+    // Iterative re-fitting (coordinate descent for pileup resolution).
+    // After the initial sequential peeling pass, each pulse is re-fitted
+    // against a residual with all *other* pulses subtracted, cycling until
+    // convergence.  Set fRefitMaxIter = 0 to disable (legacy single-pass).
+    Int_t    fRefitMaxIter      = 3;     // max refinement iterations (0 = disable)
+    Double_t fRefitConvergence  = 0.01;  // stop when |Δchi2_total/chi2_total| < this
 
 };
 
@@ -142,16 +160,23 @@ struct FADCTemplate {
 
 // Outputs
 struct FitPulseResult {
-    Double_t timeSample;    // fitted t0 in sample units (template-fit χ² scan)
+    Double_t timeSample;    // fitted t0 in sample units
+                            //   Stage 1: t0 s.t. tmpl.eval(i-t0) peaks at (t0+peakBin)
+                            //   Stage 2: t0 s.t. EMG(i-t0,sigma,tau) peaks at (t0+sigma²/tau)
     Double_t timeHalfMax;   // half-max rising-edge crossing in sample units (CFD-style)
-    Double_t amplitude;     // fitted amplitude A (pedestal-subtracted ADC counts)
-    Double_t integral;      // fitted integral of the pulse
+    Double_t amplitude;     // fitted peak ADC count (pedestal-subtracted)
+                            //   Stage 1: directly = A from the 2-parameter scan
+                            //   Stage 2: A_raw * emgPeakRaw (normalised to physical peak)
+    Double_t integral;      // fitted integral of the pulse (ADC counts × samples)
     Double_t baseline;      // fitted baseline offset b (residual DC after ped sub)
-    Double_t chi2ndf;       // chi2 / NDF at the best t0
+    Double_t chi2ndf;       // chi2 / NDF of the final accepted fit
+    Double_t chi2ndf_s1;    // chi2 / NDF of the Stage-1 fixed-template fit (diagnostic;
+                            //   equals chi2ndf when Stage 1 was accepted)
     Double_t mfAmplitude;   // MF output value at the candidate peak
+    Double_t fittedSigma;   // Stage-2 fitted Gaussian sigma in sample units (0.0 for Stage-1)
+    Double_t fittedTau;     // Stage-2 fitted exponential tau in sample units  (0.0 for Stage-1)
+    Int_t    fitStage;      // 1 = fixed-template scan accepted, 2 = Minuit fallback used
     Bool_t   valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
-
-
 };
 
 struct FADCPulseWF {

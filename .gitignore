@@ -23,6 +23,7 @@ run_tests_anwithtemp_plots
 run_tests_decoded
 run_tests_anwithtemp_decoded
 run_tests_anwithtemp_debug
+run_basic1
 
 *.root
 *.png

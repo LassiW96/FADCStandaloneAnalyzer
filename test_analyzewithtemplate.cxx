@@ -20,12 +20,13 @@
 TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     waveformGenerator gen;
     DigitizerParams daq;
-    daq.noise_sigma = 0.5;
-    daq.num_samples = 120;
+    daq.noise_sigma = 1.5;
+    daq.num_samples = 74;
+    daq.max_n_pulses = 1;
 
     WaveformParams wf;
-    wf.tau_r = 2;
-    wf.tau_f = 7;
+    wf.sigma_g = 3;
+    wf.tau = 10;
     wf.mean_gain = 10.0;
 
     gen.setDigitizerParams(daq);
@@ -41,22 +42,22 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     tmplCfg.fMFLeft = 8;
     tmplCfg.fMFRight = 8;
     tmplCfg.fMFStart = 0;     // search from sample 0 (MF loop now starts at 0)
-    tmplCfg.fAmpCutADC = 4.0;
+    tmplCfg.fAmpCutADC = 6.0;
 
     SPEParams sp;
-    sp.sigma = 1;
-    sp.tau = 8;
+    sp.sigma = 3;
+    sp.tau = 10;
 
     FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
     
-    SECTION("Multiple iterations"){
+    SECTION("Multiple iterations"){ 
         const int num_wfs = 1000;
         int passed_count = 0;
         std::vector<int> failed_runs;
         
-        Double_t int_margin = wf.mean_gain * wf.pulse_width * 5.0;
+        Double_t int_margin = wf.mean_gain * 5.0;
         Double_t amp_margin = wf.mean_gain * 5.0;
-        Double_t time_margin = daq.sample_rate * 10.0;
+        Double_t time_margin = daq.sample_rate * 5.0;
         
         // Create the ROOT File
         TFile outfile("test_waveform_fits2.root", "RECREATE");
@@ -191,7 +192,7 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
             if (!plot.passed) {
                 plot.mg->Write();
             }
-            else if (pass_probability > 99.0 && (plot.index % 100 == 0)) {
+            else if (pass_probability > 98.0 && (plot.index % 100 == 0)) {
                 plot.mg->Write();
             }
         }

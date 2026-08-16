@@ -115,7 +115,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
     //        Adjust tau_r / tau_f to the real detector pulse shape if known.
     SPEParams sp;
     sp.sigma = 1.5;
-    sp.tau = 18.0;
+    sp.tau = 15.0;
 
     FADCTemplate tmpl = FADCTemplate::fromWaveformParams(sp);
 
@@ -124,7 +124,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
     analyzer.setConfig(config);
 
     TemplateAnalysisConfig tmplCfg;
-    tmplCfg.fMFSeparation = 8;
+    tmplCfg.fMFSeparation = 5;
     tmplCfg.fScanHalf     = 6;
     tmplCfg.fMFLeft       = 8;
     tmplCfg.fMFRight      = 8;
@@ -223,10 +223,31 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data", "[DecodedData][Statistics]
 
                     TF1 fTotal("fTotal",
                         [tmpl, templateResult](double* x, double* /*p*/) {
+                            double t = x[0];
                             double val = templateResult.pedestal;
                             for (const auto& pulse : templateResult.pulses)
-                                if (pulse.valid)
-                                    val += pulse.amplitude * tmpl.eval(x[0] - pulse.timeSample);
+                                if (pulse.valid){
+                                    if (pulse.fitStage == 1 || pulse.fittedSigma == 0.0) {
+                                    // Stage 1: fixed template shape
+                                    val += pulse.amplitude * tmpl.eval(t - pulse.timeSample);
+                                } else {
+                                    // Stage 2: fitted EMG with custom sigma/tau
+                                    double dt = t - pulse.timeSample;
+                                    double sigma = pulse.fittedSigma;
+                                    double tau   = pulse.fittedTau;
+                                    if (sigma > 0 && tau > 0) {
+                                        double s2_2t2  = (sigma*sigma) / (2.0*tau*tau);
+                                        double erf_arg = (dt - sigma*sigma/tau) / (sigma*std::sqrt(2.0));
+                                        double raw = std::exp(s2_2t2 - dt/tau) * (1.0 + std::erf(erf_arg));
+                                        // Normalize so peak = 1, then scale by fitted amplitude
+                                        double dt_peak = sigma*sigma / tau;
+                                        double raw_peak = std::exp(s2_2t2 - dt_peak/tau)
+                                                        * (1.0 + std::erf(0.0));
+                                        if (raw_peak > 1e-12)
+                                            val += pulse.amplitude * raw / raw_peak;
+                                    }
+                                }
+                            }
                             return val;
                         },  0.0, static_cast<double>(N - 1), 0);
 
