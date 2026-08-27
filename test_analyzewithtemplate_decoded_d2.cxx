@@ -1,0 +1,336 @@
+/*
+ * test_analyzewithtemplate_decoded.cxx
+ *
+ * Analog of test_analyzewithtemplate.cxx but reads real decoded FADC
+ * waveforms from:
+ *   /MyFiles/StandAloneAnalyzer/wm_data/decoded_data/
+ * instead of using the waveformGenerator.
+ *
+ * Because there is no truth information available for real data, the
+ * per-waveform validation section (integral/amplitude/time comparison to
+ * truth) is replaced by:
+ *   - Statistics histograms of the reconstructed quantities
+ *       h_nPulses      - number of pulses found per waveform
+ *       h_amplitude    - fitted amplitude of the first valid pulse
+ *       h_pedestal     - estimated pedestal value per waveform
+ *       h_chi2ndf      - chi2/ndf of the best fit per waveform
+ *   - Per-event waveform overlays written to the ROOT file for ALL
+ *     waveforms (not just failures), named "Waveform_ev<N>_ch<C>"
+ *
+ * Branch layout follows plot_waveforms.C:
+ *   TTree "T"  in the decoded ROOT file
+ *     Ndata.moller.scint.samps        (Int_t)
+ *     moller.scint.samps              (Double_t[])
+ *     Ndata.moller.scint.samps_idx    (Int_t)
+ *     moller.scint.samps_idx          (Double_t[])
+ *     Ndata.moller.scint.samps_elemID (Int_t)
+ *     moller.scint.samps_elemID       (Double_t[])
+ *
+ * Compile & run (from the test1/ directory):
+ *   g++ -std=c++17 test_main.cxx test_analyzewithtemplate_decoded.cxx \
+ *       FADCStandaloneAnalyzer.cxx waveformGenerator.cxx \
+ *       -lCatch2Main -lCatch2 $(root-config --cflags --libs) \
+ *       -o run_tests_anwithtemp_decoded && ./run_tests_anwithtemp_decoded
+ *
+ * Output: decoded_analyzewithtemplate.root
+ */
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+#include "FADCStandaloneAnalyzer.h"
+#include "RtypesCore.h"
+// waveformGenerator.h not needed here: SPEParams is defined in
+// FADCStandaloneAnalyzer.h
+
+// ROOT Headers
+#include <TCanvas.h>
+#include <TF1.h>
+#include <TFile.h>
+#include <TGraph.h>
+#include <TH1D.h>
+#include <TH1F.h>
+#include <TMath.h>
+#include <TMultiGraph.h>
+#include <TROOT.h>
+#include <TString.h>
+#include <TTree.h>
+
+// ── Decoded data file
+// ─────────────────────────────────────────────────────────
+static const char *kInputFile =
+    "/home/lasitha/MyFiles/StandAloneAnalyzer/wm_data/decoded_data/"
+    "moller_fadc_replayed_329_seg0_1_08_10_26.root";
+
+// Maximum array sizes (same as plot_waveforms.C)
+static const int kMaxSamps = 20000;
+static const int kMaxChans = 1000;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Catch2 test case
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
+          "[DecodedData][Statistics]") {
+
+  // ── 1.  Open the decoded ROOT file ───────────────────────────────────────
+  TFile *inFile = TFile::Open(kInputFile);
+  REQUIRE(inFile != nullptr);
+  REQUIRE(!inFile->IsZombie());
+
+  TTree *T = dynamic_cast<TTree *>(inFile->Get("T"));
+  REQUIRE(T != nullptr);
+
+  // ── 2.  Branch setup (mirrors plot_waveforms.C) ───────────────────────────
+  T->SetBranchStatus("*", 0);
+  T->SetBranchStatus("Ndata.moller.scint.samps", 1);
+  T->SetBranchStatus("moller.scint.samps", 1);
+  T->SetBranchStatus("Ndata.moller.scint.samps_idx", 1);
+  T->SetBranchStatus("moller.scint.samps_idx", 1);
+  T->SetBranchStatus("Ndata.moller.scint.samps_elemID", 1);
+  T->SetBranchStatus("moller.scint.samps_elemID", 1);
+
+  Int_t nsamps = 0;
+  Int_t nsamps_idx = 0;
+  Int_t nsamps_elemID = 0;
+  Double_t samps[kMaxSamps];
+  Double_t samps_idx[kMaxChans];
+  Double_t samps_elemID[kMaxChans];
+
+  T->SetBranchAddress("Ndata.moller.scint.samps", &nsamps);
+  T->SetBranchAddress("moller.scint.samps", samps);
+  T->SetBranchAddress("Ndata.moller.scint.samps_idx", &nsamps_idx);
+  T->SetBranchAddress("moller.scint.samps_idx", samps_idx);
+  T->SetBranchAddress("Ndata.moller.scint.samps_elemID", &nsamps_elemID);
+  T->SetBranchAddress("moller.scint.samps_elemID", samps_elemID);
+
+  // ── 3.  Template & analysis configuration ────────────────────────────────
+  //        Mirrors the settings in test_analyzewithtemplate.cxx.
+  //        Adjust tau_r / tau_f to the real detector pulse shape if known.
+
+  FADCStandaloneAnalyzer analyzer;
+  FADCConfig config = {4, 50, 2, 5, 2, 12};
+  analyzer.setConfig(config);
+
+  TemplateAnalysisConfig tmplCfg;
+  // D2 specific configurations
+  tmplCfg.fSmoothHalfWidth = 1; // Gaussian pre-smoothing kernel half-width
+  tmplCfg.fD2ThresholdNSigma =
+      5.0; // Significance level for the auto-scaled d2 threshold
+  tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
+  tmplCfg.fAmpCutADC = 8.0;
+  tmplCfg.fFitMargin = 8;
+
+  SECTION("Multiple iterations on decoded data") {
+
+    // ── How many waveforms to process ────────────────────────────────────
+    //   Set num_wfs to a large number (e.g. 10000) to sweep the whole file,
+    //   or a smaller value for a quick sanity check.
+    const int num_wfs = 1000;
+
+    // Which channel index to follow across events (-1 = all channels in
+    // each event, same semantics as plot_waveforms.C cycleChannels mode).
+    const int targetChannel = 4;
+    bool cycleChannels = (targetChannel < 0);
+
+    // ── Output file ───────────────────────────────────────────────────────
+    TString name = TString::Format(
+        "../root_files/decoded_analyzewithd2_chan%d.root", targetChannel);
+    TFile outfile(name, "RECREATE");
+    REQUIRE(outfile.IsOpen());
+
+    // ── Statistics histograms ─────────────────────────────────────────────
+    // These replace the truth-residual histograms in
+    // test_analyzewithtemplate.cxx since real data has no truth information.
+    TH1F h_nPulses("h_nPulses", "Pulses Found per Waveform;N_{pulses};Counts",
+                   13, -0.5, 12.5);
+    TH1F h_amplitude(
+        "h_amplitude",
+        "Fitted Amplitude (first valid pulse);A [ADC counts];Counts", 100, 0,
+        500);
+    TH1F h_pedestal("h_pedestal",
+                    "Pedestal per Waveform;Pedestal [ADC counts];Counts", 100,
+                    0, 500);
+    TH1F h_chi2ndf("h_chi2ndf",
+                   "chi^{2}/NDF (first valid pulse);#chi^{2}/NDF;Counts", 100,
+                   0, 20);
+    TH1F h_integral(
+        "h_integral",
+        "Fitted Integral (first valid pulse);Integral [ADC counts];Counts", 100,
+        0, 5000);
+
+    // ── Event loop ────────────────────────────────────────────────────────
+    long long nentries = T->GetEntries();
+    int wfCount = 0;   // waveforms processed so far
+    int zeroCount = 0; // events where no pulse was found
+
+    for (long long iev = 0; iev < nentries && wfCount < num_wfs; ++iev) {
+      T->GetEntry(iev);
+
+      if (nsamps_idx <= 0)
+        continue; // skip empty events
+
+      int nch = nsamps_idx;
+      int nsamps_per_ch = (nch > 0) ? (nsamps / nch) : 0;
+      if (nsamps_per_ch <= 0)
+        continue;
+
+      int ch_start = cycleChannels ? 0 : targetChannel;
+      int ch_end = cycleChannels ? (nch - 1) : targetChannel;
+
+      if (ch_start >= nch) {
+        printf("Warning: channel %d not present in event %lld (nch=%d). "
+               "Skipping.\n",
+               targetChannel, iev, nch);
+        continue;
+      }
+      ch_end = TMath::Min(ch_end, nch - 1);
+
+      for (int ci = ch_start; ci <= ch_end && wfCount < num_wfs; ++ci) {
+        int startIdx = static_cast<int>(samps_idx[ci]);
+        int elemID = static_cast<int>(samps_elemID[ci]);
+
+        // ── Build sample vector ───────────────────────────────────────
+        std::vector<Double_t> samples(nsamps_per_ch);
+        for (int s = 0; s < nsamps_per_ch; ++s)
+          samples[s] = samps[startIdx + s];
+
+        // ── Run AnalyzeWithTemplate ───────────────────────────────────
+        FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+
+        // ── Fill statistics histograms ────────────────────────────────
+        h_nPulses.Fill(templateResult.nPulses);
+        h_pedestal.Fill(templateResult.pedestal);
+
+        if (templateResult.nPulses == 0) {
+          ++zeroCount;
+        }
+
+        for (const auto &p : templateResult.pulses) {
+          if (!p.valid)
+            continue;
+          // Only the first valid pulse goes into the per-waveform hists
+          h_amplitude.Fill(p.amplitude);
+          h_chi2ndf.Fill(p.chi2ndf);
+          h_integral.Fill(p.integral);
+          break;
+        }
+
+        // ── Build waveform + fit overlay (only when at least one pulse found)
+        // ──
+        if (templateResult.nPulses > 0) {
+          Int_t N = static_cast<Int_t>(samples.size());
+
+          TGraph *gSamples = new TGraph(N);
+          gSamples->SetName(Form("wf_raw_ev%lld_ch%d", iev, elemID));
+          for (Int_t j = 0; j < N; ++j)
+            gSamples->SetPoint(j, (double)j, samples[j]);
+          gSamples->SetMarkerStyle(20);
+          gSamples->SetMarkerSize(1);
+          gSamples->SetMarkerColor(kBlue + 1);
+          gSamples->SetLineColor(kBlue + 1);
+
+          TF1 fTotal(
+              "fTotal",
+              [templateResult](double *x, double * /*p*/) {
+                double t = x[0];
+                double val = templateResult.pedestal;
+                for (const auto &pulse : templateResult.pulses) {
+                  if (pulse.valid) {
+                    // D2 path always uses the fitted EMG model (Stage 2)
+                    double dt = t - pulse.timeSample;
+                    double sigma = pulse.fittedSigma;
+                    double tau = pulse.fittedTau;
+                    if (sigma > 0 && tau > 0) {
+                      double s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
+                      double erf_arg =
+                          (dt - sigma * sigma / tau) / (sigma * std::sqrt(2.0));
+                      double raw = std::exp(s2_2t2 - dt / tau) *
+                                   (1.0 + std::erf(erf_arg));
+                      // Normalize so peak = 1, then scale by fitted amplitude
+                      double dt_peak = sigma * sigma / tau;
+                      double raw_peak = std::exp(s2_2t2 - dt_peak / tau) *
+                                        (1.0 + std::erf(0.0));
+                      if (raw_peak > 1e-12)
+                        val += pulse.amplitude * raw / raw_peak;
+                    }
+                  }
+                }
+                return val;
+              },
+              0.0, static_cast<double>(N - 1), 0);
+
+          // Build fit graph at 0.25-sample steps
+          const double fitStep = 0.25;
+          const double fitXMin = 0.0;
+          const double fitXMax = static_cast<double>(N - 1);
+          int nFitPts = static_cast<int>((fitXMax - fitXMin) / fitStep) + 1;
+          TGraph *gFit = new TGraph(nFitPts);
+          for (int k = 0; k < nFitPts; ++k) {
+            double xv = fitXMin + k * fitStep;
+            gFit->SetPoint(k, xv, fTotal.Eval(xv));
+          }
+          gFit->SetName(Form("fit_ev%lld_ch%d", iev, elemID));
+          gFit->SetLineColor(kRed);
+          gFit->SetLineWidth(2);
+
+          TMultiGraph *mg = new TMultiGraph();
+          mg->SetName(Form("Waveform_ev%lld_ch%d_%dpulse(s)", iev, elemID,
+                           templateResult.nPulses));
+          mg->SetTitle(Form("Template Fit  ev %lld  ch %d;Sample;ADC counts",
+                            iev, elemID));
+          mg->Add(gSamples, "P");
+          mg->Add(gFit, "PL");
+          mg->Write();
+        }
+
+        ++wfCount;
+      }
+
+      // In cycle-all-channels mode, only use the first non-empty event
+      if (cycleChannels && wfCount > 0)
+        break;
+    }
+
+    // ── Write histograms ──────────────────────────────────────────────────
+    h_nPulses.Write();
+    h_amplitude.Write();
+    h_pedestal.Write();
+    h_chi2ndf.Write();
+    h_integral.Write();
+
+    outfile.Close();
+
+    // ── Summary printout (mirrors test_analyzewithtemplate.cxx style) ─────
+    double frac_with_pulse =
+        (wfCount > 0) ? (1.0 - static_cast<double>(zeroCount) / wfCount) * 100.0
+                      : 0.0;
+
+    std::cout << "\n======================================================\n";
+    std::cout << "       DECODED DATA TEMPLATE ANALYSIS STATISTICS      \n";
+    std::cout << "======================================================\n";
+    std::cout << "Total Waveforms Processed : " << wfCount << "\n";
+    std::cout << "Waveforms With >= 1 Pulse : " << (wfCount - zeroCount)
+              << "\n";
+    std::cout << "Waveforms With No Pulse   : " << zeroCount << "\n";
+    std::cout << "Pulse-Finding Efficiency  : " << std::fixed
+              << std::setprecision(2) << frac_with_pulse << "%\n";
+    std::cout
+        << "Output File               : decoded_analyzewithtemplate.root\n";
+    std::cout << "======================================================\n\n";
+
+    // Basic sanity check: we should have processed at least one waveform
+    REQUIRE(wfCount > 0);
+  }
+
+  inFile->Close();
+}

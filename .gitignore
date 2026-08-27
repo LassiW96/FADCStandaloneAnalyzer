@@ -24,6 +24,7 @@ run_tests_decoded
 run_tests_anwithtemp_decoded
 run_tests_anwithtemp_debug
 run_basic1
+run_*
 
 *.root
 *.png

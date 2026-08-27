@@ -62,7 +62,8 @@ TEST_CASE("Single pulse without noise", "[basic1]") {
   std::vector<Double_t> samples(rawWaveform.begin(), rawWaveform.end());
   const TruthPulseInfo &wfInfo = gen.getTruthInfo();
 
-  FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+  FADCPulseWF templateResult =
+      analyzer.AnalyzeWithTemplate(samples, tmpl, tmplCfg);
 
   // Error margins
   Double_t int_margin = wf.mean_gain * 3.0; // Sould be within N # of samples
