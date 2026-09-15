@@ -123,7 +123,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
 
   TemplateAnalysisConfig tmplCfg;
   // D2 specific configurations
-  tmplCfg.fSmoothHalfWidth = 1; // Gaussian pre-smoothing kernel half-width
+  tmplCfg.fSmoothHalfWidth = 2; // Gaussian pre-smoothing kernel half-width
   tmplCfg.fD2ThresholdNSigma =
       5.0; // Significance level for the auto-scaled d2 threshold
   tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
@@ -139,12 +139,12 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
 
     // Which channel index to follow across events (-1 = all channels in
     // each event, same semantics as plot_waveforms.C cycleChannels mode).
-    const int targetChannel = 4;
+    const int targetChannel = 5;
     bool cycleChannels = (targetChannel < 0);
 
     // ── Output file ───────────────────────────────────────────────────────
     TString name = TString::Format(
-        "../root_files/decoded_analyzewithd2_chan%d.root", targetChannel);
+        "../root_files/decoded_analyzewithd2_chan%d_new.root", targetChannel);
     TFile outfile(name, "RECREATE");
     REQUIRE(outfile.IsOpen());
 

@@ -25,13 +25,13 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
   daq.max_n_pulses = 1;
 
   WaveformParams wf;
-  wf.sigma_g = 3;
-  wf.tau = 12;
+  wf.sigma_g = 6;
+  wf.tau = 20;
   wf.mean_gain = 10.0;
 
   // Secondary pulse
   wf.sp_enable = true;
-  wf.sp_delay = 35.0;
+  wf.sp_delay = 65.0;
   wf.sp_amplitude_frac = 0.5;
 
   gen.setDigitizerParams(daq);
@@ -48,7 +48,7 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
       5.0; // Significance level for the auto-scaled d2 threshold
   tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
   tmplCfg.fAmpCutADC = 8.0;
-  tmplCfg.fFitMargin = 8;
+  tmplCfg.fFitMargin = 5;
   tmplCfg.fScanHalf = 15.0;
 
   SECTION("Multiple iterations") {
@@ -61,10 +61,17 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     Double_t time_margin = daq.sample_rate * 5.0;
 
     // Create the ROOT File
-    TString name = TString::Format(
-        "../root_files/"
-        "test_waveform_fits_pileup_delay_%g_noise_%g_updated.root",
-        wf.sp_delay, daq.noise_sigma);
+    TString name;
+    if (wf.sp_enable) {
+      name = TString::Format(
+          "../root_files/"
+          "test_waveform_fits_pileup_delay_%g_noise_%g_updated.root",
+          wf.sp_delay, daq.noise_sigma);
+    } else {
+      name = TString::Format("../root_files/"
+                             "test_waveform_fits_noise_%g_updated.root",
+                             daq.noise_sigma);
+    }
     TFile outfile(name, "RECREATE");
 
     TH1F h_int_diff("h_int_diff", "Integral Difference", 100, -100, 100);

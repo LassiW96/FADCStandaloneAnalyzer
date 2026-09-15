@@ -54,7 +54,7 @@ struct FADCPulse {
 // Parameters
 struct TemplateAnalysisConfig {
   // Pedestal
-  Int_t fNPedSamples = 4; // samples used to estimate the pedestal
+  Int_t fNPedSamples = 6; // samples used to estimate the pedestal
 
   // Matched-filter window (for computeMatchedFilter with raw template)
   Int_t fMFLeft = 5;  // samples left of template peak in MF kernel
@@ -85,6 +85,11 @@ struct TemplateAnalysisConfig {
   Int_t fRefitMaxIter = 3; // max refinement iterations (0 = disable)
   Double_t fRefitConvergence =
       0.01; // stop when |Δchi2_total/chi2_total| < this
+
+  // Post-fit quality cuts
+  Double_t fMaxChi2NDF = 25.0;     // reject fits with chi2/ndf above this
+  Double_t fMaxBaselineFrac = 0.3; // reject if |baseline| > frac * amplitude
+  Double_t fMaxBaselineAbs = 5.0;  // absolute cap on baseline (ADC)
 
   // ── Second-derivative peak finder ──────────────────────────────────────────
   // Gaussian pre-smoothing kernel half-width (samples).
@@ -136,34 +141,36 @@ struct FADCTemplate {
 
 // Outputs
 struct FitPulseResult {
-  Double_t timeSample; // fitted t0 in sample units s.t. EMG(i-t0,sigma,tau) peaks at t0+sigma²/tau
+  Double_t timeSample; // fitted t0 in sample units s.t. EMG(i-t0,sigma,tau)
+                       // peaks at t0+sigma²/tau
   Double_t
       timeHalfMax; // half-max rising-edge crossing in sample units (CFD-style)
   Double_t
       amplitude; // fitted peak ADC count (pedestal-subtracted, physical peak)
-  Double_t integral; // fitted integral of the pulse (ADC counts × samples)
-  Double_t baseline; // fitted baseline offset b (residual DC after ped sub)
-  Double_t chi2ndf;  // chi2 / NDF of the final accepted fit
-  Double_t
-      chi2ndf_s1; // diagnostic chi2 / NDF
+  Double_t integral;    // fitted integral of the pulse (ADC counts × samples)
+  Double_t baseline;    // fitted baseline offset b (residual DC after ped sub)
+  Double_t chi2ndf;     // chi2 / NDF of the final accepted fit
+  Double_t chi2ndf_s1;  // diagnostic chi2 / NDF
   Double_t mfAmplitude; // |d2| magnitude or MF output at peak
   Double_t fittedSigma; // fitted Gaussian sigma in sample units
   Double_t fittedTau;   // fitted exponential tau in sample units
-  Int_t fitStage; // fit stage indicator (2 = EMG Minuit fit)
-  Bool_t valid;   // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
+  Int_t fitStage;       // fit stage indicator (2 = EMG Minuit fit)
+  Bool_t valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
   Int_t clusterID = -1; // -1 if non-cluster; >=0 for D2 cluster index
   Int_t nPulsesInCluster =
       1; // how many pulses share this cluster (1 = isolated)
 };
 
 struct FADCPulseWF {
-  Double_t pedestal;                  // mean of the first fNPedSamples
-  Int_t nPulses;                      // number of valid fitted pulses
-  std::vector<FitPulseResult> pulses; // one entry per fitted pulse, sorted by time
+  Double_t pedestal; // mean of the first fNPedSamples
+  Int_t nPulses;     // number of valid fitted pulses
+  std::vector<FitPulseResult>
+      pulses; // one entry per fitted pulse, sorted by time
 
   // Diagnostics
   std::vector<Double_t> wfPS;
-  std::vector<Double_t> wfSmooth;  // smoothed trace (for diagnostics / intermediate steps)
+  std::vector<Double_t>
+      wfSmooth; // smoothed trace (for diagnostics / intermediate steps)
   std::vector<Double_t> mfOut;
   std::vector<Double_t> d2Out;     // second-derivative trace (empty if non-D2)
   std::vector<D2Cluster> clusters; // D2 cluster info
@@ -193,8 +200,8 @@ public:
                     Double_t tcal) const;
 
   // Gaussian pre-smoothing
-  static std::vector<Double_t>
-  gaussianSmooth(const std::vector<Double_t> &wf, Int_t halfWidth);
+  static std::vector<Double_t> gaussianSmooth(const std::vector<Double_t> &wf,
+                                              Int_t halfWidth);
 
   // Second-derivative based analysis — fully template-free.
   // Peak finding via second derivative of the (optionally smoothed) waveform.

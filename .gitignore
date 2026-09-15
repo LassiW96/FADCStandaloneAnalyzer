@@ -29,3 +29,6 @@ run_*
 *.root
 *.png
 *.gdb
+*.out
+*.docx
+*.txt

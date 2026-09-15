@@ -182,8 +182,6 @@ FADCPulse FADCStandaloneAnalyzer::Analyze(const std::vector<Double_t> &samples,
 // Fit based functions
 // FADC Template
 
-
-
 Double_t FADCTemplate::eval(Double_t t) const {
   if (t < 0.0 || t >= static_cast<Double_t>(shape.size()))
     return 0.0;
@@ -286,6 +284,10 @@ static Double_t evalRawEMG(Double_t dt, Double_t sigma, Double_t tau) {
     return 0.0;
   Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
   Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+
+  if (erf_arg > 700.0)
+    return 0.0; // overflow guard
+
   Double_t val = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
   return (val > 1e-12) ? val : 0.0;
 }
@@ -329,7 +331,6 @@ struct EMGFitFunctor {
   }
 };
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Second-derivative peak finder — fully template-free analysis path
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -338,8 +339,9 @@ struct EMGFitFunctor {
 // gaussianSmooth — 1-D Gaussian convolution with reflect boundary.
 // Kernel sigma = halfWidth / 2.0 samples; kernel extends ±halfWidth samples.
 // ---------------------------------------------------------------------------
-std::vector<Double_t> FADCStandaloneAnalyzer::gaussianSmooth(
-    const std::vector<Double_t> &wf, Int_t halfWidth) {
+std::vector<Double_t>
+FADCStandaloneAnalyzer::gaussianSmooth(const std::vector<Double_t> &wf,
+                                       Int_t halfWidth) {
   Int_t N = static_cast<Int_t>(wf.size());
   if (halfWidth <= 0 || N <= 1)
     return wf;
@@ -377,7 +379,7 @@ std::vector<Double_t> FADCStandaloneAnalyzer::gaussianSmooth(
 }
 
 // ---------------------------------------------------------------------------
-// computeSecondDerivative — public static method.
+// computeSecondDerivative
 // Smooths the waveform with a Gaussian kernel, then computes the
 // central-difference second derivative: d2[i] = y[i-1] - 2*y[i] + y[i+1].
 // Edge values are copied from the nearest interior value.
@@ -388,7 +390,7 @@ std::vector<Double_t> FADCStandaloneAnalyzer::computeSecondDerivative(
   if (N < 3)
     return std::vector<Double_t>(N, 0.0);
 
-  // Optional Gaussian pre-smoothing
+  // Gaussian pre-smoothing
   std::vector<Double_t> smoothed;
   const std::vector<Double_t> *yPtr = &wfPS;
   if (smoothHalfWidth > 0) {
@@ -418,13 +420,8 @@ struct EMGSeeds {
 // estimateEMGSeeds — estimate σ and τ from the smoothed waveform shape
 // around a D2-identified peak, before Minuit runs.
 //
-//   σ ← 10%–90% rise time on the rising edge:  σ_seed = t_rise / 2.56
-//   τ ← time from peak to 1/e amplitude on the falling edge: τ_seed = t_decay
-//
-// For pileup clusters (nPulsesInCluster > 1) the τ search window is halved
-// to avoid measuring into the neighbouring pulse.  Falls back to the
-// hardcoded NPS defaults (σ=1.25, τ=2.5 samples) when edge measurements
-// are not possible.
+// Modified: Valley-aware backward/forward searches to prevent pileup tails
+// from skewing the baseline. Physically clamped output.
 // ---------------------------------------------------------------------------
 static EMGSeeds estimateEMGSeeds(const std::vector<Double_t> &wfSmooth,
                                  Double_t peakPosition, Double_t peakAmplitude,
@@ -441,63 +438,87 @@ static EMGSeeds estimateEMGSeeds(const std::vector<Double_t> &wfSmooth,
   if (peakAmplitude < 1e-6)
     return seeds; // no signal — use defaults
 
-  // ── σ estimate: 10%–90% rise time ────────────────────────────────────
-  Double_t level10 = 0.10 * peakAmplitude;
-  Double_t level90 = 0.90 * peakAmplitude;
+  // σ estimate: Valley-aware 10%–90% rise time
 
-  // Walk backward from the peak to find the crossings
-  for (Int_t i = peakBin; i > 0; --i) {
-    if (wfSmooth[i] <= level90 && wfSmooth[i + 1] > level90) {
-      // Linear interpolation for sub-sample 90% crossing
-      Double_t frac90 =
-          (level90 - wfSmooth[i]) / (wfSmooth[i + 1] - wfSmooth[i]);
-      Double_t t90 = static_cast<Double_t>(i) + frac90;
-
-      // Continue walking backward for the 10% crossing
-      for (Int_t j = i; j > 0; --j) {
-        if (wfSmooth[j] <= level10 && wfSmooth[j + 1] > level10) {
-          Double_t frac10 =
-              (level10 - wfSmooth[j]) / (wfSmooth[j + 1] - wfSmooth[j]);
-          Double_t t10 = static_cast<Double_t>(j) + frac10;
-          Double_t tRise = t90 - t10;
-          if (tRise > 0.0) {
-            seeds.sigma = tRise / 2.56;
-          }
-          break;
-        }
-      }
+  Int_t leftValleyBin = 0;
+  Double_t leftMinVal = wfSmooth[peakBin];
+  for (Int_t i = peakBin - 1; i >= 0; --i) {
+    if (wfSmooth[i] <= leftMinVal) {
+      leftMinVal = wfSmooth[i];
+      leftValleyBin = i;
+    } else {
+      leftValleyBin = i + 1; // hit rising edge of earlier pulse or baseline
       break;
     }
   }
 
-  // Clamp σ to Minuit limits
-  seeds.sigma = std::max(0.1, std::min(seeds.sigma, 5.0));
+  Double_t heightLeft = wfSmooth[peakBin] - leftMinVal;
+  if (heightLeft > 4.0 && peakBin > leftValleyBin) {
+    Double_t level10 = leftMinVal + 0.10 * heightLeft;
+    Double_t level90 = leftMinVal + 0.90 * heightLeft;
 
-  // ── τ estimate: peak to 1/e decay ────────────────────────────────────
-  Double_t level1e = peakAmplitude / std::exp(1.0); // ≈ 36.8% of peak
+    for (Int_t i = peakBin; i > leftValleyBin; --i) {
+      if (wfSmooth[i] <= level90 && wfSmooth[i + 1] > level90) {
+        Double_t frac90 =
+            (level90 - wfSmooth[i]) / (wfSmooth[i + 1] - wfSmooth[i]);
+        Double_t t90 = static_cast<Double_t>(i) + frac90;
 
-  // Limit the forward search to avoid measuring into a pileup neighbour
+        for (Int_t j = i; j > leftValleyBin; --j) {
+          if (wfSmooth[j] <= level10 && wfSmooth[j + 1] > level10) {
+            Double_t frac10 =
+                (level10 - wfSmooth[j]) / (wfSmooth[j + 1] - wfSmooth[j]);
+            Double_t t10 = static_cast<Double_t>(j) + frac10;
+            Double_t tRise = t90 - t10;
+            if (tRise > 0.0)
+              seeds.sigma = tRise / 2.56;
+            break;
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Clamping σ to Physical Limits
+  seeds.sigma = std::max(0.3, std::min(seeds.sigma, 2.5));
+
+  // τ estimate: Valley-aware peak to 1/e decay
+
   Int_t maxForward = N - 1 - peakBin;
   if (nPulsesInCluster > 1) {
     maxForward = std::max(1, maxForward / 2);
   }
   Int_t searchEnd = std::min(N - 1, peakBin + maxForward);
 
-  for (Int_t i = peakBin; i < searchEnd; ++i) {
-    if (wfSmooth[i] >= level1e && wfSmooth[i + 1] < level1e) {
-      // Linear interpolation for sub-sample 1/e crossing
-      Double_t frac = (wfSmooth[i] - level1e) / (wfSmooth[i] - wfSmooth[i + 1]);
-      Double_t tDecay =
-          (static_cast<Double_t>(i) + frac) - static_cast<Double_t>(peakBin);
-      if (tDecay > 0.0) {
-        seeds.tau = tDecay;
+  // Walk forward to find the local valley
+  Int_t fwdValleyBin = peakBin;
+  for (Int_t i = peakBin + 1; i <= searchEnd; ++i) {
+    if (wfSmooth[i] > wfSmooth[i - 1])
+      break; // Hit a valley
+    fwdValleyBin = i;
+  }
+
+  Double_t fwdBase = wfSmooth[fwdValleyBin];
+  Double_t effDecayAmp = peakAmplitude - fwdBase;
+
+  if (effDecayAmp > 1e-6) {
+    Double_t level1e = fwdBase + effDecayAmp / std::exp(1.0);
+
+    for (Int_t i = peakBin; i < fwdValleyBin; ++i) {
+      if (wfSmooth[i] >= level1e && wfSmooth[i + 1] < level1e) {
+        Double_t frac =
+            (wfSmooth[i] - level1e) / (wfSmooth[i] - wfSmooth[i + 1]);
+        Double_t tDecay =
+            (static_cast<Double_t>(i) + frac) - static_cast<Double_t>(peakBin);
+        if (tDecay > 0.0)
+          seeds.tau = tDecay;
+        break;
       }
-      break;
     }
   }
 
-  // Clamp τ to Minuit limits
-  seeds.tau = std::max(0.5, std::min(seeds.tau, 15.0));
+  // Clamping τ to Physical Limits
+  seeds.tau = std::max(1.0, std::min(seeds.tau, 6.0));
 
   return seeds;
 }
@@ -523,7 +544,7 @@ struct D2FindResult {
 // findD2Peaks — identify ROIs and pulse candidates from the d2 trace.
 //
 // Algorithm:
-//   1. Scan d2 for contiguous regions where d2[i] < -d2Threshold (ROIs).
+//   1. Scan d2 for regions where d2[i] < -d2Threshold (ROIs).
 //   2. Within each ROI, find local minima of d2 separated by at least
 //      minPeakSep samples.  Each minimum marks one pulse candidate.
 //   3. For each d2 minimum, find the corresponding waveform peak (local max
@@ -537,7 +558,7 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
   Int_t N = static_cast<Int_t>(d2.size());
   D2FindResult result;
 
-  // 1. Find contiguous ROIs where d2 < -threshold
+  // Find contiguous ROIs where d2 < -threshold
   struct ROI {
     Int_t start;
     Int_t end;
@@ -547,7 +568,7 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
   Bool_t inROI = kFALSE;
   Int_t roiStart = 0;
 
-  for (Int_t i = 1; i < N; ++i) {
+  for (Int_t i = 0; i < N; ++i) {
     if (!inROI && d2[i] < -d2Threshold) {
       inROI = kTRUE;
       roiStart = i;
@@ -556,11 +577,10 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
       rois.push_back({roiStart, i - 1});
     }
   }
-  // Close any open ROI at the end of the waveform
   if (inROI)
     rois.push_back({roiStart, N - 1});
 
-  // 2. Process each ROI into a cluster
+  // Process each ROI into a cluster
   for (size_t ci = 0; ci < rois.size(); ++ci) {
     const ROI &roi = rois[ci];
     D2Cluster cluster;
@@ -568,48 +588,15 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
     cluster.roiEnd = roi.end;
     cluster.nPulses = 0;
 
-    // Ensure the search range allows local-minimum detection (i-1, i+1 valid)
-    Int_t searchStart = std::max(1, roi.start);
-    Int_t searchEnd = std::min(N - 2, roi.end);
-
-    if (searchStart > searchEnd) {
-      // ROI too narrow for local-minimum detection — use the deepest bin
-      Int_t bestBin = roi.start;
-      for (Int_t i = roi.start + 1; i <= roi.end && i < N; ++i) {
-        if (d2[i] < d2[bestBin])
-          bestBin = i;
-      }
-
-      // Find corresponding waveform peak near the d2 minimum
-      Int_t wfPeakBin = bestBin;
-      Int_t sLo = std::max(0, bestBin - minPeakSep);
-      Int_t sHi = std::min(N - 1, bestBin + minPeakSep);
-      for (Int_t i = sLo; i <= sHi; ++i) {
-        if (wfSmooth[i] > wfSmooth[wfPeakBin])
-          wfPeakBin = i;
-      }
-
-      D2Peak peak;
-      peak.position = static_cast<Double_t>(wfPeakBin);
-      peak.d2Value = d2[bestBin];
-      peak.clusterID = static_cast<Int_t>(ci);
-
-      // Estimate seeds for a single isolated pulse
-      EMGSeeds seeds =
-          estimateEMGSeeds(wfSmooth, peak.position, wfSmooth[wfPeakBin], 1);
-      peak.seedSigma = seeds.sigma;
-      peak.seedTau = seeds.tau;
-
-      result.peaks.push_back(peak);
-      cluster.nPulses = 1;
-      result.clusters.push_back(cluster);
-      continue;
-    }
+    Int_t searchStart = std::max(0, roi.start);
+    Int_t searchEnd = std::min(N - 1, roi.end);
 
     // Find all local minima of d2 within the ROI
     std::vector<Int_t> minBins;
     for (Int_t i = searchStart; i <= searchEnd; ++i) {
-      if ((d2[i] < d2[i - 1] || i == searchStart) && d2[i] <= d2[i + 1]) {
+      bool is_left_lower = (i == 0 || d2[i] <= d2[i - 1]);
+      bool is_right_lower = (i == N - 1 || d2[i] <= d2[i + 1]);
+      if (is_left_lower && is_right_lower) {
         // Enforce minimum separation — keep the deeper minimum
         Bool_t merged = kFALSE;
         for (size_t k = 0; k < minBins.size(); ++k) {
@@ -635,10 +622,8 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
       minBins.push_back(bestBin);
     }
 
-    // 3. For each d2 minimum, refine the peak position on the smoothed waveform
+    // For each d2 minimum, refine the peak position on the smoothed waveform
     for (Int_t mb : minBins) {
-      // The d2 minimum corresponds to a waveform peak.
-      // Find the local maximum of wfSmooth near this d2 minimum.
       Int_t sLo = std::max(0, mb - minPeakSep);
       Int_t sHi = std::min(N - 1, mb + minPeakSep);
       Int_t wfPeakBin = mb;
@@ -650,9 +635,7 @@ static D2FindResult findD2Peaks(const std::vector<Double_t> &d2,
         }
       }
 
-      // Parabolic sub-sample interpolation on the smoothed waveform:
-      //   pos = peakBin - (y[peak+1] - y[peak-1]) /
-      //                   (2 * (y[peak-1] - 2*y[peak] + y[peak+1]))
+      // Parabolic sub-sample interpolation on the smoothed waveform
       Double_t pos = static_cast<Double_t>(wfPeakBin);
       if (wfPeakBin > 0 && wfPeakBin < N - 1) {
         Double_t denom =
@@ -757,8 +740,14 @@ static FitPulseResult fitEMGDirect(const std::vector<Double_t> &wfResidual,
   min->SetLimitedVariable(1, "Baseline", 0.0, 1.0, -20.0, 20.0);
   min->SetLimitedVariable(2, "t0", initT0, 0.5, initT0 - cfg.fScanHalf,
                           initT0 + cfg.fScanHalf);
-  min->SetLimitedVariable(3, "Sigma", initSigma, 0.1, 0.1, 5.0);
-  min->SetLimitedVariable(4, "Tau", initTau, 0.2, 0.5, 15.0);
+  min->SetLimitedVariable(3, "Sigma", initSigma, 0.1, 0.15, 4.0);
+  Double_t maxTau = 10.0;
+  // If pulses are clustered in pileup, prevent Tau from expanding into the
+  // neighbor
+  if ((fitHi - static_cast<Int_t>(wfPeakBin)) <= 4 || seedTau < 2.0) {
+    maxTau = std::max(2.0, seedTau * 1.5);
+  }
+  min->SetLimitedVariable(4, "Tau", initTau, 0.2, 0.3, maxTau);
 
   min->Minimize();
 
@@ -843,11 +832,20 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
   Int_t intHi = static_cast<Int_t>(std::ceil(emgPeakOffset + 5.0 * tau));
 
   Double_t emgAreaRaw = 0.0;
-  Double_t emgPeakRaw = 0.0;
   for (Int_t i = intLo; i <= intHi; ++i) {
-    Double_t f =
+    emgAreaRaw +=
         evalRawEMG(static_cast<Double_t>(i), fit.fittedSigma, fit.fittedTau);
-    emgAreaRaw += f;
+  }
+
+  // Find the true continuous peak via fine sub-sample scan.
+  // Integer-only sampling misses the peak for sub-sample sigma/tau,
+  // which systematically inflates the integral (up to +44% at sigma=0.35).
+  Double_t emgPeakRaw = 0.0;
+  Double_t scanCenter = emgPeakOffset; // sigma^2 / tau
+  Double_t scanRadius = std::max(1.0, 2.0 * sigma);
+  for (Double_t dt = scanCenter - scanRadius; dt <= scanCenter + scanRadius;
+       dt += 0.01) {
+    Double_t f = evalRawEMG(dt, fit.fittedSigma, fit.fittedTau);
     if (f > emgPeakRaw)
       emgPeakRaw = f;
   }
@@ -885,8 +883,8 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
 // AnalyzeWithD2 — second-derivative based, fully template-free analysis.
 //
 // Pipeline:
-//   1. Pedestal estimation (identical to AnalyzeWithTemplate)
-//   2. Gaussian smoothing + second derivative computation
+//   1. Pedestal estimation (identical to hcana PedestalEstimation)
+//   2. Second derivative computation (d2)
 //   3. Auto-scaled d2 threshold from pedestal noise
 //   4. ROI detection and peak identification via findD2Peaks
 //   5. Direct EMG Minuit fit per peak (no template)
@@ -903,8 +901,7 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
   if (N == 0)
     return result;
 
-  // ── 1. Pedestal — noise-aware front vs tail selection ─────────────────
-  //       (identical logic to AnalyzeWithTemplate)
+  // 1. Pedestal — noise-aware front vs tail selection ________________________
   Int_t nPed = std::min(cfg.fNPedSamples, N);
 
   // Front pedestal
@@ -932,17 +929,8 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
   ped2Var /= (nPed > 1) ? (nPed - 1) : 1;
 
   Double_t pedNoiseSigma = std::sqrt((ped <= ped2) ? pedVar : ped2Var);
-
-  if (pedNoiseSigma > 1e-6) {
-    Double_t diffThreshold = 3.0 * pedNoiseSigma * std::sqrt(2.0 / nPed);
-    if (std::abs(ped - ped2) > diffThreshold) {
-      result.pedestal = std::min(ped, ped2);
-    } else {
-      result.pedestal = (ped + ped2) / 2.0;
-    }
-  } else {
-    result.pedestal = std::min(ped, ped2);
-  }
+  Double_t pedestal = (pedVar <= ped2Var) ? ped : ped2;
+  result.pedestal = pedestal;
 
   // Pedestal-subtracted waveform
   std::vector<Double_t> wfPS(N);
@@ -956,23 +944,48 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
     localCfg.fNoiseSigmaADC = pedNoiseSigma;
   }
 
-  // ── 2. Smooth + second derivative ─────────────────────────────────────
-  std::vector<Double_t> wfSmooth =
-      gaussianSmooth(wfPS, localCfg.fSmoothHalfWidth);
+  // 2. Second derivative calculation ______________________________________
+  Int_t effectiveHalfWidth = localCfg.fSmoothHalfWidth;
+  if (effectiveHalfWidth < 0) {
+    // Measure maximum 1-sample rising slope relative to peak amplitude
+    Double_t maxSlope = 0.0;
+    Double_t maxAmp = 0.0;
+    for (Int_t i = 1; i < N; ++i) {
+      Double_t slope = wfPS[i] - wfPS[i - 1];
+      if (slope > maxSlope)
+        maxSlope = slope;
+      if (wfPS[i] > maxAmp)
+        maxAmp = wfPS[i];
+    }
+    // If a pulse rises > 60% of its peak amplitude in a single sample
+    // (fast/sub-sample pulse), use minimal smoothing (halfWidth = 1) so
+    // curvature is preserved.
+    if (maxAmp > 10.0 && (maxSlope / maxAmp) > 0.60) {
+      effectiveHalfWidth = 1;
+    } else {
+      effectiveHalfWidth = 2;
+    }
+  }
+
+  // Smoothing for visualization purposes and d2 peak finding. D2 calculation
+  // has its own smoothing.
+  std::vector<Double_t> wfSmooth = gaussianSmooth(wfPS, effectiveHalfWidth);
   result.wfSmooth = wfSmooth;
-  std::vector<Double_t> d2 =
-      computeSecondDerivative(wfPS, localCfg.fSmoothHalfWidth);
+
+  std::vector<Double_t> d2 = computeSecondDerivative(wfPS, effectiveHalfWidth);
   result.d2Out = d2;
 
-  // ── 3. Auto-scale d2 threshold from pedestal noise ────────────────────
+  // 3. Auto-scale d2 threshold from pedestal noise ________________________
   //       Estimate σ_d2 from the pedestal region of the d2 trace.
   Int_t d2PedStart, d2PedEnd;
-  if (ped <= ped2) {
-    // Front is quieter (no early pulse)
+
+  // Use variance to find the quieter region
+  if (pedVar <= ped2Var) {
+    // Front is quieter
     d2PedStart = 1; // skip edge copy
     d2PedEnd = std::min(d2PedStart + nPed, N - 1);
   } else {
-    // Tail is quieter (early pulse detected)
+    // Tail is quieter
     d2PedEnd = N - 1;
     d2PedStart = std::max(1, d2PedEnd - nPed);
   }
@@ -991,13 +1004,10 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
     d2Var += dd * dd;
   }
   d2Var /= (d2PedN > 1) ? (d2PedN - 1) : 1;
-  Double_t d2Sigma = std::sqrt(d2Var);
+  Double_t d2Sigma = (pedNoiseSigma > 0.05) ? (pedNoiseSigma * 0.595) : 0.6;
+  Double_t d2Threshold = std::max(0.5, localCfg.fD2ThresholdNSigma * d2Sigma);
 
-  Double_t d2Threshold = localCfg.fD2ThresholdNSigma * d2Sigma;
-  if (d2Threshold < 0.1)
-    d2Threshold = 0.1; // floor to prevent noise triggers
-
-  // ── 4. Find D2 peaks and clusters ─────────────────────────────────────
+  // 4. Find D2 peaks and clusters ______________________________________
   D2FindResult d2Result =
       findD2Peaks(d2, wfSmooth, d2Threshold, localCfg.fD2MinPeakSep, nPed);
   result.clusters = d2Result.clusters;
@@ -1007,7 +1017,7 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
       d2Result.peaks.begin(), d2Result.peaks.end(),
       [](const D2Peak &a, const D2Peak &b) { return a.d2Value < b.d2Value; });
 
-  // ── 5. Fit each peak with direct EMG (template-free) ──────────────────
+  // 5. Fit each peak with direct EMG ______________________________________
   std::vector<Double_t> wfResidual = wfPS;
   std::vector<Double_t> fittedPositions;
 
@@ -1027,11 +1037,42 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
     if (tooClose)
       continue;
 
+    Int_t effectiveFitMargin = localCfg.fFitMargin;
+    if (d2Result.peaks.size() >= 2) {
+      // Check distance to closest neighboring candidate
+      Double_t minNeighborDist = 999.0;
+      for (const auto &other : d2Result.peaks) {
+        if (&other == &peak)
+          continue;
+        Double_t dist = std::abs(peak.position - other.position);
+        if (dist < minNeighborDist)
+          minNeighborDist = dist;
+      }
+      if (minNeighborDist < 8.0) {
+        effectiveFitMargin =
+            std::max(2, static_cast<Int_t>(minNeighborDist / 2.0));
+      }
+    }
+
     // Fit window around the D2-identified peak
     Int_t fitLo =
-        std::max(0, static_cast<Int_t>(peak.position) - localCfg.fFitMargin);
-    Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peak.position) +
-                                      localCfg.fFitMargin);
+        std::max(0, static_cast<Int_t>(peak.position) - effectiveFitMargin);
+
+    // Dynamically scale the right fit margin
+    Int_t tailMargin = std::max(
+        localCfg.fFitMargin, static_cast<Int_t>(std::ceil(3.0 * peak.seedTau)));
+    // Neighbor check: clamp tailMargin BEFORE reaching the neighboring peak
+    for (const auto &other : d2Result.peaks) {
+      if (other.position > peak.position) {
+        Double_t dist = other.position - peak.position;
+        Int_t maxAllowed = std::max(1, static_cast<Int_t>(dist - 1.0));
+        if (tailMargin > maxAllowed) {
+          tailMargin = maxAllowed;
+        }
+      }
+    }
+    Int_t fitHi =
+        std::min(N - 1, static_cast<Int_t>(peak.position) + tailMargin);
 
     Int_t minPts = 2 * localCfg.fFitMargin;
     if (fitHi - fitLo < minPts) {
@@ -1068,7 +1109,7 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
     result.nPulses++;
   }
 
-  // ── 6. Iterative re-fitting (coordinate descent for pileup resolution)
+  // 6. Iterative re-fitting (coordinate descent for pileup resolution)
   //       Each pulse is added back, re-fitted against the clean residual
   //       (all other pulses subtracted), then the new fit is subtracted.
   if (localCfg.fRefitMaxIter > 0 && result.nPulses >= 2) {
@@ -1097,8 +1138,12 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
                                                   pulse.fittedTau;
         Int_t fitLo =
             std::max(0, static_cast<Int_t>(peakPos) - localCfg.fFitMargin);
-        Int_t fitHi =
-            std::min(N - 1, static_cast<Int_t>(peakPos) + localCfg.fFitMargin);
+
+        Int_t tailMargin =
+            std::max(localCfg.fFitMargin,
+                     static_cast<Int_t>(std::ceil(3.0 * pulse.fittedTau)));
+
+        Int_t fitHi = std::min(N - 1, static_cast<Int_t>(peakPos) + tailMargin);
 
         // Re-fit against the clean residual
         FitPulseResult refit =
@@ -1131,7 +1176,30 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
     }
   }
 
-  // ── 7. Sort results chronologically for output ────────────────────────
+  std::vector<FitPulseResult> cleanPulses;
+  for (const auto &p : result.pulses) {
+    // Quality cut on decoupled chi2/ndf
+    if (p.chi2ndf > localCfg.fMaxChi2NDF)
+      continue;
+
+    // Baseline offset sanity
+    if (std::abs(p.baseline) > std::max(localCfg.fMaxBaselineFrac * p.amplitude,
+                                        localCfg.fMaxBaselineAbs))
+      continue;
+
+    // Boundary pegging cut — only reject truly unphysical delta spikes.
+    // Thresholds lowered to accommodate narrow physical pulses:
+    //   sigma >= 0.10 covers sigma_ns=1.0 (0.25 samples)
+    //   tau   >= 0.40 covers tau_ns=3.5  (0.875 samples)
+    if (p.fittedSigma < 0.10 || p.fittedTau < 0.40)
+      continue;
+
+    cleanPulses.push_back(p);
+  }
+  result.pulses = cleanPulses;
+  result.nPulses = static_cast<Int_t>(cleanPulses.size());
+
+  // 7. Sort results chronologically for output _________________________
   std::sort(result.pulses.begin(), result.pulses.end(),
             [](const FitPulseResult &a, const FitPulseResult &b) {
               return a.timeSample < b.timeSample;

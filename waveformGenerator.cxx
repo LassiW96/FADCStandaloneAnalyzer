@@ -167,8 +167,17 @@ std::vector<waveformGenerator::PEHit>
 waveformGenerator::generatePEHits() const {
   // Distributions for event and after pulse gen
   std::uniform_int_distribution<Int_t> num_pulses_dist(1, fDaq.max_n_pulses);
-  std::uniform_real_distribution<Double_t> window_dist(
-      10.0, fDaq.num_samples * fDaq.sample_rate - 50.0);
+  // Upper bound for primary pulse placement: leave enough room for the
+  // pulse tail (50 ns) and, when secondary pulses are enabled, for the
+  // secondary pulse to also fit entirely within the digitization window.
+  Double_t windowMax = fDaq.num_samples * fDaq.sample_rate - 50.0;
+  if (fWf.sp_enable) {
+    windowMax -= fWf.sp_delay;
+    if (fWf.sp_delay_sigma > 0.0)
+      windowMax -= 3.0 * fWf.sp_delay_sigma; // 3σ safety for delay jitter
+  }
+  windowMax = std::max(windowMax, 15.0); // safety floor
+  std::uniform_real_distribution<Double_t> window_dist(10.0, windowMax);
   std::poisson_distribution<Int_t> pe_per_hit_dist(
       15); // Avg 15 primary PEs per hit
   std::uniform_real_distribution<Double_t> ap_chance(
