@@ -4,10 +4,10 @@
 #include <Math/Factory.h>
 #include <Math/Functor.h>
 #include <Math/Minimizer.h>
+#include <TROOT.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <stdexcept>
 
 FADCStandaloneAnalyzer::FADCStandaloneAnalyzer() {
   fConfig = {/*safety config parameters*/
@@ -177,100 +177,6 @@ FADCPulse FADCStandaloneAnalyzer::Analyze(const std::vector<Double_t> &samples,
     }
   }
   return data;
-}
-
-// Fit based functions
-// FADC Template
-
-Double_t FADCTemplate::eval(Double_t t) const {
-  if (t < 0.0 || t >= static_cast<Double_t>(shape.size()))
-    return 0.0;
-  Int_t lo = static_cast<Int_t>(t);
-  Double_t frac = t - lo;
-  if (lo >= static_cast<Int_t>(shape.size()) - 1)
-    return shape.back();
-  return shape[lo] * (1.0 - frac) + shape[lo + 1] * frac;
-}
-
-// Builds a template from a measured reference pulse (e.g., from a laser or
-// LED calibration run). This path is model-independent: the measured shape is
-// used directly, so no assumptions about sigma / tau are made.
-//
-// Usage pattern:
-//   FADCTemplate tmpl = FADCTemplate::fromRawSamples(myCalibPulse, kTRUE);
-FADCTemplate FADCTemplate::fromRawSamples(const std::vector<Double_t> &rawShape,
-                                          Bool_t enable, Int_t mfLeft,
-                                          Int_t mfRight) {
-  FADCTemplate
-      tmpl; // default-constructed: shape is empty, peakBin = -1 (undefined)
-  if (!enable || rawShape.size() < 2)
-    return tmpl;
-
-  Int_t nSamples = static_cast<Int_t>(rawShape.size());
-  tmpl.shape = rawShape;
-
-  // Normalise to peak = 1 and record the peak bin
-  Double_t peak = *std::max_element(tmpl.shape.begin(), tmpl.shape.end());
-  if (peak <= 0.0)
-    throw std::runtime_error(
-        "FADCTemplate::fromRawSamples: zero-amplitude shape");
-
-  tmpl.peakBin = -1;
-  for (Int_t i = 0; i < nSamples; ++i) {
-    tmpl.shape[i] /= peak;
-    if (tmpl.shape[i] >= 1.0 - 1e-9)
-      tmpl.peakBin = i;
-  }
-  if (tmpl.peakBin < 0) {
-    // Fallback: take the bin with the highest value
-    tmpl.peakBin = static_cast<Int_t>(
-        std::max_element(tmpl.shape.begin(), tmpl.shape.end()) -
-        tmpl.shape.begin());
-  }
-
-  // Build the matched-filter kernel
-  tmpl.mfKernel.clear();
-  tmpl.mfNorm = 0.0;
-  for (Int_t i = tmpl.peakBin + mfRight; i >= tmpl.peakBin - mfLeft; --i) {
-    Double_t v = (i >= 0 && i < nSamples) ? tmpl.shape[i] : 0.0;
-    tmpl.mfKernel.push_back(v);
-    tmpl.mfNorm += v;
-  }
-  if (tmpl.mfNorm <= 0.0)
-    throw std::runtime_error("FADCTemplate::fromRawSamples: zero MF norm");
-
-  return tmpl;
-}
-
-// Compute Matched Filter
-std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
-    const std::vector<Double_t> &wfPS, const FADCTemplate &tmpl,
-    const TemplateAnalysisConfig &cfg) {
-  Int_t N = static_cast<Int_t>(wfPS.size());
-  Int_t kW = static_cast<Int_t>(tmpl.mfKernel.size()); // mfLeft + mfRight + 1
-
-  Double_t wfMin = *std::min_element(wfPS.begin(), wfPS.end());
-
-  std::vector<Double_t> mfOut(N, 0.0);
-  Double_t mfOutMin = std::numeric_limits<Double_t>::max();
-
-  for (Int_t i = 0; i < N; ++i) {
-    Double_t val = 0.0;
-    for (Int_t j = 0; j < kW; ++j) {
-      Int_t wIdx = i + j - cfg.fMFRight;
-      if (wIdx >= 0 && wIdx < N)
-        val += (wfPS[wIdx] - wfMin) * tmpl.mfKernel[j];
-    }
-    mfOut[i] = val / tmpl.mfNorm;
-    if (mfOut[i] < mfOutMin)
-      mfOutMin = mfOut[i];
-  }
-
-  // Shift so the global minimum of the MF output = 0  (mirrors fit.C line 905)
-  for (Int_t i = 0; i < N; ++i)
-    mfOut[i] -= mfOutMin;
-
-  return mfOut;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -691,7 +597,6 @@ static FitPulseResult fitEMGDirect(const std::vector<Double_t> &wfResidual,
   FitPulseResult best;
   best.valid = kFALSE;
   best.chi2ndf = std::numeric_limits<Double_t>::max();
-  best.chi2ndf_s1 = std::numeric_limits<Double_t>::max();
   best.timeSample = wfPeakBin;
   best.timeHalfMax = wfPeakBin;
   best.amplitude = 0.0;
@@ -889,8 +794,10 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
   result.nPulses = 0;
 
   Int_t N = static_cast<Int_t>(samples.size());
-  if (N == 0)
+  if (N == 0) {
+    std::cerr << "Error: Empty waveform, skipping" << std::endl;
     return result;
+  }
 
   // 1. Pedestal — noise-aware front vs tail selection ________________________
   Int_t nPed = std::min(cfg.fNPedSamples, N);
@@ -1083,6 +990,10 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
             : 1;
 
     if (!fit.valid || fit.amplitude < localCfg.fAmpCutADC) {
+      std::cerr << "[AnalyzeWithD2] Peak at sample " << peak.position
+                << " rejected (amp=" << fit.amplitude
+                << " < cut=" << localCfg.fAmpCutADC
+                << "), treating as noise.\n";
       continue;
     }
 
@@ -1101,6 +1012,11 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
   //       Each pulse is added back, re-fitted against the clean residual
   //       (all other pulses subtracted), then the new fit is subtracted.
   if (localCfg.fRefitMaxIter > 0 && result.nPulses >= 2) {
+    std::cerr << "[AnalyzeWithD2] Waveform "
+              << "pileup detected (" << result.nPulses
+              << " pulses), starting iterative re-fit.\n";
+
+    Bool_t converged = kFALSE;
     for (Int_t iter = 0; iter < localCfg.fRefitMaxIter; ++iter) {
       Double_t prevTotalChi2 = 0.0;
       for (const auto &p : result.pulses)
@@ -1159,25 +1075,43 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
       if (prevTotalChi2 > 0.0 &&
           std::abs(newTotalChi2 - prevTotalChi2) / prevTotalChi2 <
               localCfg.fRefitConvergence) {
+        converged = kTRUE;
         break;
       }
+    }
+    if (!converged && result.nPulses >= 2) {
+      std::cerr
+          << "[AnalyzeWithD2] Waveform: chi2 re-fit did NOT converge after "
+          << localCfg.fRefitMaxIter << " iterations\n";
     }
   }
 
   std::vector<FitPulseResult> cleanPulses;
   for (const auto &p : result.pulses) {
     // Quality cut on decoupled chi2/ndf
-    if (p.chi2ndf > localCfg.fMaxChi2NDF)
+    if (p.chi2ndf > localCfg.fMaxChi2NDF) {
+      std::cerr << "[AnalyzeWithD2] Pulse at sample " << p.timeSample
+                << " rejected: chi2/ndf=" << p.chi2ndf
+                << " > max=" << localCfg.fMaxChi2NDF << "\n";
       continue;
+    }
 
     // Baseline offset sanity
     if (std::abs(p.baseline) > std::max(localCfg.fMaxBaselineFrac * p.amplitude,
-                                        localCfg.fMaxBaselineAbs))
+                                        localCfg.fMaxBaselineAbs)) {
+      std::cerr << "[AnalyzeWithD2] Pulse at sample " << p.timeSample
+                << " rejected: baseline=" << p.baseline
+                << " > max frac*amp or max abs\n";
       continue;
+    }
 
     // Boundary pegging cut — only reject truly unphysical delta spikes.
-    if (p.fittedSigma < 0.10 || p.fittedTau < 0.40)
+    if (p.fittedSigma < 0.10 || p.fittedTau < 0.40) {
+      std::cerr << "[AnalyzeWithD2] Pulse at sample " << p.timeSample
+                << " rejected: pegging (sigma=" << p.fittedSigma
+                << " tau=" << p.fittedTau << ")\n";
       continue;
+    }
 
     cleanPulses.push_back(p);
   }
