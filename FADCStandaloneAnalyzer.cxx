@@ -4,10 +4,10 @@
 #include <Math/Factory.h>
 #include <Math/Functor.h>
 #include <Math/Minimizer.h>
-#include <algorithm> // std::min, std::max, std::sort, std::min_element, std::max_element
-#include <cmath>     // std::sqrt, std::abs, std::exp
-#include <limits>    // std::numeric_limits
-#include <stdexcept> // std::runtime_error
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 FADCStandaloneAnalyzer::FADCStandaloneAnalyzer() {
   fConfig = {/*safety config parameters*/
@@ -273,64 +273,6 @@ std::vector<Double_t> FADCStandaloneAnalyzer::computeMatchedFilter(
   return mfOut;
 }
 
-// ---------------------------------------------------------------------------
-// evalRawEMG — file-local helper used by EMGFitFunctor and AnalyzeWithTemplate.
-// Evaluates the raw (unnormalized) EMG pulse shape at time offset dt,
-// with Gaussian sigma and exponential tau, both in sample units.
-// Returns 0 for unphysical parameters or negligibly small values.
-// ---------------------------------------------------------------------------
-static Double_t evalRawEMG(Double_t dt, Double_t sigma, Double_t tau) {
-  if (sigma <= 0.0 || tau <= 0.0)
-    return 0.0;
-  Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
-  Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
-
-  if (erf_arg > 700.0)
-    return 0.0; // overflow guard
-
-  Double_t val = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
-  return (val > 1e-12) ? val : 0.0;
-}
-
-// ---------------------------------------------------------------------------
-// EMGFitFunctor — chi2 callable for Stage-2 Minuit fit.
-// Parameters: [0]=A (scale, raw), [1]=b (baseline), [2]=t0,
-//             [3]=sigma (sample units), [4]=tau (sample units).
-// Note: A here is the scale of the *unnormalized* EMG; the physical peak
-// amplitude is computed post-convergence in fitStage2Template.
-// ---------------------------------------------------------------------------
-struct EMGFitFunctor {
-  const std::vector<Double_t> *wfResidual;
-  Int_t fitLo;
-  Int_t fitHi;
-  Double_t minSigma;
-  Double_t adcPerMV;
-  Double_t noiseSigma;
-
-  Double_t operator()(const Double_t *par) const {
-    Double_t A = par[0];
-    Double_t b = par[1];
-    Double_t t0 = par[2];
-    Double_t sigma = par[3];
-    Double_t tau = par[4];
-
-    Double_t chi2 = 0.0;
-    for (Int_t i = fitLo; i <= fitHi; ++i) {
-      Double_t dt = static_cast<Double_t>(i) - t0;
-      Double_t f = evalRawEMG(dt, sigma, tau);
-      Double_t expected = b + A * f;
-      Double_t s_shot =
-          std::sqrt(std::abs((*wfResidual)[i]) * adcPerMV / 2.0) / adcPerMV;
-      Double_t sig = std::sqrt(s_shot * s_shot + noiseSigma * noiseSigma);
-      if (sig < minSigma)
-        sig = minSigma;
-      Double_t residual = ((*wfResidual)[i] - expected) / sig;
-      chi2 += residual * residual;
-    }
-    return chi2;
-  }
-};
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Second-derivative peak finder — fully template-free analysis path
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -377,6 +319,61 @@ FADCStandaloneAnalyzer::gaussianSmooth(const std::vector<Double_t> &wf,
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// evalRawEMG — file-local helper used by EMGFitFunctor and AnalyzeWithTemplate.
+// Evaluates the raw (unnormalized) EMG pulse shape at time offset dt,
+// with Gaussian sigma and exponential tau, both in sample units.
+// ---------------------------------------------------------------------------
+static Double_t evalRawEMG(Double_t dt, Double_t sigma, Double_t tau) {
+  if (sigma <= 0.0 || tau <= 0.0)
+    return 0.0;
+  Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
+  Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+
+  if (erf_arg > 700.0)
+    return 0.0; // overflow guard
+
+  Double_t val = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
+  return (val > 1e-12) ? val : 0.0;
+}
+
+// ---------------------------------------------------------------------------
+// EMGFitFunctor — chi2 callable for Stage-2 Minuit fit.
+// Parameters: [0]=A (amplitude), [1]=b (baseline), [2]=t0,
+//             [3]=sigma (sample units), [4]=tau (sample units).
+// ---------------------------------------------------------------------------
+struct EMGFitFunctor {
+  const std::vector<Double_t> *wfResidual;
+  Int_t fitLo;
+  Int_t fitHi;
+  Double_t minSigma;
+  Double_t adcPerMV;
+  Double_t noiseSigma;
+
+  Double_t operator()(const Double_t *par) const {
+    Double_t A = par[0];
+    Double_t b = par[1];
+    Double_t t0 = par[2];
+    Double_t sigma = par[3];
+    Double_t tau = par[4];
+
+    Double_t chi2 = 0.0;
+    for (Int_t i = fitLo; i <= fitHi; ++i) {
+      Double_t dt = static_cast<Double_t>(i) - t0;
+      Double_t f = evalRawEMG(dt, sigma, tau);
+      Double_t expected = b + A * f;
+      Double_t s_shot =
+          std::sqrt(std::abs((*wfResidual)[i]) * adcPerMV / 2.0) / adcPerMV;
+      Double_t sig = std::sqrt(s_shot * s_shot + noiseSigma * noiseSigma);
+      if (sig < minSigma)
+        sig = minSigma;
+      Double_t residual = ((*wfResidual)[i] - expected) / sig;
+      chi2 += residual * residual;
+    }
+    return chi2;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // computeSecondDerivative
@@ -523,7 +520,7 @@ static EMGSeeds estimateEMGSeeds(const std::vector<Double_t> &wfSmooth,
   return seeds;
 }
 
-// File-local struct for D2 peak candidates (not exposed in header)
+// File-local struct for D2 peak candidates
 struct D2Peak {
   Double_t
       position; // sub-sample peak position (parabolic-refined on smoothed wf)
@@ -534,7 +531,7 @@ struct D2Peak {
   Double_t seedTau = 2.5;    // per-pulse τ estimate from waveform edges
 };
 
-// Return type for findD2Peaks (avoids <utility> dependency for std::pair)
+// Return type for findD2Peaks
 struct D2FindResult {
   std::vector<D2Peak> peaks;
   std::vector<D2Cluster> clusters;
@@ -742,6 +739,7 @@ static FitPulseResult fitEMGDirect(const std::vector<Double_t> &wfResidual,
                           initT0 + cfg.fScanHalf);
   min->SetLimitedVariable(3, "Sigma", initSigma, 0.1, 0.15, 4.0);
   Double_t maxTau = 10.0;
+
   // If pulses are clustered in pileup, prevent Tau from expanding into the
   // neighbor
   if ((fitHi - static_cast<Int_t>(wfPeakBin)) <= 4 || seedTau < 2.0) {
@@ -785,7 +783,6 @@ static FitPulseResult fitEMGDirect(const std::vector<Double_t> &wfResidual,
 
 // ---------------------------------------------------------------------------
 // addEMGContribution — add or subtract a fitted EMG pulse from a waveform.
-// Template-free version of addPulseContribution for the D2 path.
 // sign = +1.0 to add back (restore), -1.0 to subtract (peel).
 // ---------------------------------------------------------------------------
 static void addEMGContribution(std::vector<Double_t> &wf,
@@ -812,9 +809,8 @@ static void addEMGContribution(std::vector<Double_t> &wf,
 
 // ---------------------------------------------------------------------------
 // computePulseDerivedQuantitiesEMG — template-free derived quantities.
-// Computes the pulse integral and half-max rising-edge timing for an
-// EMG-fitted pulse.  The integration window is derived from the fitted
-// sigma and tau rather than from a template shape.
+// Computes the pulse integral and half-max rising-edge timing. The integration
+// window is derived from the fitted sigma and tau.
 // ---------------------------------------------------------------------------
 static void
 computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
@@ -822,7 +818,6 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
                                  const TemplateAnalysisConfig &cfg) {
   Int_t N = static_cast<Int_t>(wfForTiming.size());
 
-  // ── Integral ──────────────────────────────────────────────────────────
   // Integration window: [-3σ, peak + 5τ] centred on the EMG origin.
   Double_t sigma = (fit.fittedSigma > 0.0) ? fit.fittedSigma : 1.25;
   Double_t tau = (fit.fittedTau > 0.0) ? fit.fittedTau : 2.5;
@@ -837,9 +832,6 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
         evalRawEMG(static_cast<Double_t>(i), fit.fittedSigma, fit.fittedTau);
   }
 
-  // Find the true continuous peak via fine sub-sample scan.
-  // Integer-only sampling misses the peak for sub-sample sigma/tau,
-  // which systematically inflates the integral (up to +44% at sigma=0.35).
   Double_t emgPeakRaw = 0.0;
   Double_t scanCenter = emgPeakOffset; // sigma^2 / tau
   Double_t scanRadius = std::max(1.0, 2.0 * sigma);
@@ -853,7 +845,6 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
     emgPeakRaw = 1.0;
   fit.integral = fit.amplitude * emgAreaRaw / emgPeakRaw;
 
-  // ── Half-max rising-edge crossing (CFD-style timing) ──────────────────
   Int_t wfPeak = static_cast<Int_t>(std::round(
       fit.timeSample + fit.fittedSigma * fit.fittedSigma / fit.fittedTau));
   wfPeak = std::max(0, std::min(wfPeak, N - 1));
@@ -957,9 +948,7 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
       if (wfPS[i] > maxAmp)
         maxAmp = wfPS[i];
     }
-    // If a pulse rises > 60% of its peak amplitude in a single sample
-    // (fast/sub-sample pulse), use minimal smoothing (halfWidth = 1) so
-    // curvature is preserved.
+
     if (maxAmp > 10.0 && (maxSlope / maxAmp) > 0.60) {
       effectiveHalfWidth = 1;
     } else {
@@ -1097,7 +1086,6 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
       continue;
     }
 
-    // Compute derived quantities (template-free)
     computePulseDerivedQuantitiesEMG(fit, wfResidual, localCfg);
 
     // Subtract this pulse from the residual for subsequent fits
@@ -1188,9 +1176,6 @@ FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
       continue;
 
     // Boundary pegging cut — only reject truly unphysical delta spikes.
-    // Thresholds lowered to accommodate narrow physical pulses:
-    //   sigma >= 0.10 covers sigma_ns=1.0 (0.25 samples)
-    //   tau   >= 0.40 covers tau_ns=3.5  (0.875 samples)
     if (p.fittedSigma < 0.10 || p.fittedTau < 0.40)
       continue;
 

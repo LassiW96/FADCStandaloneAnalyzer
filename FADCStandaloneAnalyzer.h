@@ -25,13 +25,9 @@ struct FADCCalib {
   // Calibration parameters - these can be also taken from db at run time
   Double_t ChanTomV;
   Double_t pC_Conv;
-
-  // These change per channel basis
-  // Double_t tcal;
-  // Double_t gain;
 };
 
-// Output Pulse Data
+// Output pulse data structure for hcana style analysis
 struct FADCPulse {
   Double_t fSampPed;
   Bool_t fHasMulti;
@@ -39,7 +35,6 @@ struct FADCPulse {
   Int_t fNPeakSamples;
   Double_t fPeakPedestalRatio;
 
-  // Output Pulse Data
   std::vector<Double_t> fSampPulseInt;
   std::vector<Double_t> fSampPulseAmp;
   std::vector<Double_t> fSampPulseTime;
@@ -64,8 +59,7 @@ struct TemplateAnalysisConfig {
   Double_t fAdcPerMV = 4.096; // ADC counts per mV
   Double_t fMinSigma = 0.5;   // floor for per-sample sigma (ADC counts)
 
-  // Electronic noise sigma (ADC counts). Added in quadrature with the
-  // shot-noise term in the per-sample error model: σ² = σ_shot² + σ_elec².
+  // Electronic noise sigma (ADC counts).
   // Negative (default) = auto-estimate from pedestal sample variance.
   // Zero = disable (pure shot-noise model, legacy behaviour).
   Double_t fNoiseSigmaADC = -1.0;
@@ -79,9 +73,6 @@ struct TemplateAnalysisConfig {
   Int_t fFitMargin = 20;    // fit over [peak - margin, peak + margin]
 
   // Iterative re-fitting (coordinate descent for pileup resolution).
-  // After the initial sequential peeling pass, each pulse is re-fitted
-  // against a residual with all *other* pulses subtracted, cycling until
-  // convergence. Set fRefitMaxIter = 0 to disable (legacy single-pass).
   Int_t fRefitMaxIter = 3; // max refinement iterations (0 = disable)
   Double_t fRefitConvergence =
       0.01; // stop when |Δchi2_total/chi2_total| < this
@@ -91,9 +82,8 @@ struct TemplateAnalysisConfig {
   Double_t fMaxBaselineFrac = 0.3; // reject if |baseline| > frac * amplitude
   Double_t fMaxBaselineAbs = 5.0;  // absolute cap on baseline (ADC)
 
-  // ── Second-derivative peak finder ──────────────────────────────────────────
+  // Second-derivative peak finder
   // Gaussian pre-smoothing kernel half-width (samples).
-  // The smoothing sigma is fSmoothHalfWidth / 2.0 samples.
   Int_t fSmoothHalfWidth = 3;
 
   // Significance level for the auto-scaled d2 threshold.
@@ -101,14 +91,9 @@ struct TemplateAnalysisConfig {
   // is the RMS of the second derivative in the pedestal region.
   Double_t fD2ThresholdNSigma = 5.0;
 
-  // Minimum separation between second-derivative minima within a cluster
-  // to count as distinct pulses (samples).
   Int_t fD2MinPeakSep = 3;
 };
 
-// Second-derivative cluster: a contiguous region of interest (ROI) where the
-// second derivative falls below the noise threshold, indicating one or more
-// overlapping pulses.
 struct D2Cluster {
   Int_t roiStart; // first sample index of the ROI
   Int_t roiEnd;   // last  sample index of the ROI
@@ -139,7 +124,7 @@ struct FADCTemplate {
   Double_t eval(Double_t t) const;
 };
 
-// Outputs
+// Output data structures for fit based/template based analysis
 struct FitPulseResult {
   Double_t timeSample; // fitted t0 in sample units s.t. EMG(i-t0,sigma,tau)
                        // peaks at t0+sigma²/tau
@@ -195,21 +180,18 @@ public:
       const std::vector<Double_t> &wfPS, const FADCTemplate &tmpl,
       const TemplateAnalysisConfig &cfg = TemplateAnalysisConfig{});
 
-  // Main analysis function
-  FADCPulse Analyze(const std::vector<Double_t> &samples, Double_t gain,
-                    Double_t tcal) const;
-
-  // Gaussian pre-smoothing
   static std::vector<Double_t> gaussianSmooth(const std::vector<Double_t> &wf,
                                               Int_t halfWidth);
 
-  // Second-derivative based analysis — fully template-free.
-  // Peak finding via second derivative of the (optionally smoothed) waveform.
-  // Fitting via direct EMG model (Minuit, no template shape required).
   static std::vector<Double_t>
   computeSecondDerivative(const std::vector<Double_t> &wfPS,
                           Int_t smoothHalfWidth = 3);
 
+  // Main analysis functions
+  FADCPulse Analyze(const std::vector<Double_t> &samples, Double_t gain,
+                    Double_t tcal) const;
+
+  // Second-derivative based analysis — fully template-free.
   FADCPulseWF AnalyzeWithD2(
       const std::vector<Double_t> &samples,
       const TemplateAnalysisConfig &cfg = TemplateAnalysisConfig{}) const;
