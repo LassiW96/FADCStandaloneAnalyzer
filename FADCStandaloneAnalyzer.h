@@ -4,8 +4,7 @@
 #include "Rtypes.h"
 #include <vector>
 
-// ====================== Data structures for hcana style analysis
-// ======================
+// ============= Data structures for hcana style analysis =============
 struct FADCConfig {
   // configuration parameters - taken from db
   Int_t fNPedestalSamples;
@@ -40,8 +39,7 @@ struct FADCPulse {
   std::vector<Int_t> fSampPulsePileup;
 };
 
-// ====================== Fit based analysis data structures
-// ======================
+// ============= Fit based analysis data structures =============
 struct TemplateAnalysisConfig {
   // Pedestal
   Int_t fNPedSamples = 6; // samples used to estimate the pedestal
@@ -150,7 +148,7 @@ public:
                     Double_t tcal) const;
 
   // Template free, second derivative based analysis
-  FADCPulseWF AnalyzeWithD2(
+  FADCPulseWF AnalyzeWithEMG(
       const std::vector<Double_t> &samples,
       const TemplateAnalysisConfig &cfg = TemplateAnalysisConfig{}) const;
 

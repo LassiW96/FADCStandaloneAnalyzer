@@ -776,7 +776,7 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
 }
 
 // ---------------------------------------------------------------------------
-// AnalyzeWithD2 — second-derivative based, fully template-free analysis.
+// AnalyzeWithEMG — second-derivative based, fully template-free analysis.
 //
 // Pipeline:
 //   1. Pedestal estimation (identical to hcana PedestalEstimation)
@@ -787,9 +787,9 @@ computePulseDerivedQuantitiesEMG(FitPulseResult &fit,
 //   6. Iterative coordinate-descent re-fitting for pileup resolution
 //   7. Chronological sort of output pulses
 // ---------------------------------------------------------------------------
-FADCPulseWF
-FADCStandaloneAnalyzer::AnalyzeWithD2(const std::vector<Double_t> &samples,
-                                      const TemplateAnalysisConfig &cfg) const {
+FADCPulseWF FADCStandaloneAnalyzer::AnalyzeWithEMG(
+    const std::vector<Double_t> &samples,
+    const TemplateAnalysisConfig &cfg) const {
   FADCPulseWF result;
   result.nPulses = 0;
 

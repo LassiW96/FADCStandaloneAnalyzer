@@ -43,7 +43,7 @@ TEST_CASE("AnalyzeWithD2 Intermediate Steps", "[D2_Intermediate_Steps]") {
 
   // Secondary pulse (pileup) configuration
   wf.sp_enable = true;
-  wf.sp_delay = 20.0;
+  wf.sp_delay = 35.0;
   wf.sp_amplitude_frac = 0.5;
 
   gen.setDigitizerParams(daq);
@@ -59,18 +59,20 @@ TEST_CASE("AnalyzeWithD2 Intermediate Steps", "[D2_Intermediate_Steps]") {
   tmplCfg.fD2ThresholdNSigma =
       5.0;                   // Significance level for auto-scaled d2 threshold
   tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
-  tmplCfg.fAmpCutADC = 8.0;
-  tmplCfg.fFitMargin = 8;
-  tmplCfg.fScanHalf = 15.0;
+  tmplCfg.fAmpCutADC = 5.0;
+  tmplCfg.fFitMargin = 5;
+  tmplCfg.fMaxBaselineAbs = 8.0;
+  tmplCfg.fScanHalf = 2.0;
 
   // Ensure output directory exists
-  gSystem->mkdir("../root_files", kTRUE);
+  gSystem->mkdir("../root_files/preliminary", kTRUE);
 
-  TString rootFileName = "../root_files/test_d2_intermediate_steps.root";
+  TString rootFileName =
+      "../root_files/preliminary/test_d2_intermediate_steps_35.root";
   TFile outfile(rootFileName, "RECREATE");
   if (outfile.IsZombie()) {
     // Fallback to current directory if parent path is not writable
-    rootFileName = "test_d2_intermediate_steps.root";
+    rootFileName = "test_d2_intermediate_steps_35.root";
     outfile.Open(rootFileName, "RECREATE");
   }
 
@@ -105,7 +107,7 @@ TEST_CASE("AnalyzeWithD2 Intermediate Steps", "[D2_Intermediate_Steps]") {
     const Int_t N = static_cast<Int_t>(samples.size());
 
     // 2. Run AnalyzeWithD2
-    FADCPulseWF d2Result = analyzer.AnalyzeWithD2(samples, tmplCfg);
+    FADCPulseWF d2Result = analyzer.AnalyzeWithEMG(samples, tmplCfg);
     total_pulses_found += d2Result.nPulses;
 
     std::cout << "  Pedestal: " << std::fixed << std::setprecision(2)

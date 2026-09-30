@@ -10,8 +10,7 @@
 #include <vector>
 
 // Helper: run AnalyzeWithD2 and write results + truth + errors to the stream
-static void writeAnalysisResults(std::ofstream &out,
-                                 const std::string &label,
+static void writeAnalysisResults(std::ofstream &out, const std::string &label,
                                  const std::vector<Int_t> &rawWaveform,
                                  const TruthPulseInfo &truth,
                                  FADCStandaloneAnalyzer &analyzer,
@@ -19,28 +18,24 @@ static void writeAnalysisResults(std::ofstream &out,
   // Convert to Double_t for the analyzer
   std::vector<Double_t> samples(rawWaveform.begin(), rawWaveform.end());
 
-  FADCPulseWF result = analyzer.AnalyzeWithD2(samples, tmplCfg);
+  FADCPulseWF result = analyzer.AnalyzeWithEMG(samples, tmplCfg);
 
   out << "  --- " << label << " ---\n";
 
   // Analyzer results
   out << "  Analyzer: pedestal = " << std::fixed << std::setprecision(2)
-      << result.pedestal
-      << ", nPulses = " << result.nPulses << "\n";
+      << result.pedestal << ", nPulses = " << result.nPulses << "\n";
 
   for (size_t p = 0; p < result.pulses.size(); p++) {
     const auto &pulse = result.pulses[p];
     out << "    Pulse " << p << ":"
-        << " valid=" << pulse.valid
-        << " timeSample=" << std::setprecision(3) << pulse.timeSample
-        << " timeHalfMax=" << pulse.timeHalfMax
+        << " valid=" << pulse.valid << " timeSample=" << std::setprecision(3)
+        << pulse.timeSample << " timeHalfMax=" << pulse.timeHalfMax
         << " amplitude=" << std::setprecision(2) << pulse.amplitude
-        << " integral=" << pulse.integral
-        << " baseline=" << pulse.baseline
+        << " integral=" << pulse.integral << " baseline=" << pulse.baseline
         << " chi2ndf=" << std::setprecision(4) << pulse.chi2ndf
         << " fittedSigma=" << std::setprecision(3) << pulse.fittedSigma
-        << " fittedTau=" << pulse.fittedTau
-        << " fitStage=" << pulse.fitStage
+        << " fittedTau=" << pulse.fittedTau << " fitStage=" << pulse.fitStage
         << "\n";
   }
 
@@ -50,8 +45,7 @@ static void writeAnalysisResults(std::ofstream &out,
     out << "    Pulse " << t << ":"
         << " integral=" << std::setprecision(2) << truth.pulseIntegral[t]
         << " amplitude=" << truth.pulseAmplitude[t]
-        << " time=" << std::setprecision(3) << truth.pulseTime[t]
-        << "\n";
+        << " time=" << std::setprecision(3) << truth.pulseTime[t] << "\n";
   }
 
   // Error checks
@@ -59,18 +53,17 @@ static void writeAnalysisResults(std::ofstream &out,
     out << "  ERROR: No pulses found by analyzer, expected "
         << truth.pulseIntegral.size() << "\n";
   } else if (static_cast<size_t>(result.nPulses) < truth.pulseIntegral.size()) {
-    out << "  ERROR: Missed pulses — found " << result.nPulses
-        << ", expected " << truth.pulseIntegral.size() << "\n";
+    out << "  ERROR: Missed pulses — found " << result.nPulses << ", expected "
+        << truth.pulseIntegral.size() << "\n";
   } else if (static_cast<size_t>(result.nPulses) > truth.pulseIntegral.size()) {
-    out << "  WARNING: Extra pulses — found " << result.nPulses
-        << ", expected " << truth.pulseIntegral.size() << "\n";
+    out << "  WARNING: Extra pulses — found " << result.nPulses << ", expected "
+        << truth.pulseIntegral.size() << "\n";
   }
 
   out << "\n";
 }
 
-TEST_CASE("Waveform Cases to Text File",
-          "[waveform_cases][text_output]") {
+TEST_CASE("Waveform Cases to Text File", "[waveform_cases][text_output]") {
 
   // ── Output file ────────────────────────────────────────────────────
   std::ofstream out("waveform_cases_results.txt");
@@ -127,8 +120,8 @@ TEST_CASE("Waveform Cases to Text File",
     std::vector<Int_t> noiseWf = genNoise.noiseWaveform();
     TruthPulseInfo noiseTruth;
 
-    writeAnalysisResults(out, "Noise only", noiseWf, noiseTruth,
-                         analyzer, tmplCfg);
+    writeAnalysisResults(out, "Noise only", noiseWf, noiseTruth, analyzer,
+                         tmplCfg);
 
     out << "======================================================\n\n";
   }
@@ -157,8 +150,8 @@ TEST_CASE("Waveform Cases to Text File",
       std::vector<Int_t> waveform = gen.generateWaveform(PulseShape::SPE);
       const TruthPulseInfo &truth = gen.getTruthInfo();
 
-      writeAnalysisResults(out, "Single pulse #" + std::to_string(i),
-                           waveform, truth, analyzer, tmplCfg);
+      writeAnalysisResults(out, "Single pulse #" + std::to_string(i), waveform,
+                           truth, analyzer, tmplCfg);
     }
 
     out << "======================================================\n\n";
@@ -191,8 +184,8 @@ TEST_CASE("Waveform Cases to Text File",
       std::vector<Int_t> waveform = gen.generateWaveform(PulseShape::SPE);
       const TruthPulseInfo &truth = gen.getTruthInfo();
 
-      writeAnalysisResults(out, "SP pulse #" + std::to_string(i),
-                           waveform, truth, analyzer, tmplCfg);
+      writeAnalysisResults(out, "SP pulse #" + std::to_string(i), waveform,
+                           truth, analyzer, tmplCfg);
     }
 
     out << "======================================================\n\n";
@@ -201,4 +194,3 @@ TEST_CASE("Waveform Cases to Text File",
   out.close();
   std::cout << "\nResults written to: waveform_cases_results.txt\n";
 }
-

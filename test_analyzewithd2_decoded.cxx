@@ -67,9 +67,11 @@
 
 // ── Decoded data file
 // ─────────────────────────────────────────────────────────
-static const char *kInputFile =
+static const int kRunNo = 330;
+static const TString kInputFile = TString::Format(
     "/home/lasitha/MyFiles/StandAloneAnalyzer/wm_data/decoded_data/"
-    "moller_fadc_replayed_329_seg0_1_08_10_26.root";
+    "moller_fadc_replayed_%d_seg0_1_09_23_26.root",
+    kRunNo);
 
 // Maximum array sizes (same as plot_waveforms.C)
 static const int kMaxSamps = 20000;
@@ -79,8 +81,7 @@ static const int kMaxChans = 1000;
 // Catch2 test case
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
-          "[DecodedData][Statistics]") {
+TEST_CASE("AnalyzeWithD2 on Decoded FADC Data", "[DecodedData][Statistics]") {
 
   // ── 1.  Open the decoded ROOT file ───────────────────────────────────────
   TFile *inFile = TFile::Open(kInputFile);
@@ -123,12 +124,14 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
 
   TemplateAnalysisConfig tmplCfg;
   // D2 specific configurations
-  tmplCfg.fSmoothHalfWidth = 2; // Gaussian pre-smoothing kernel half-width
+  tmplCfg.fSmoothHalfWidth = 1; // Gaussian pre-smoothing kernel half-width
   tmplCfg.fD2ThresholdNSigma =
       5.0; // Significance level for the auto-scaled d2 threshold
   tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
-  tmplCfg.fAmpCutADC = 8.0;
-  tmplCfg.fFitMargin = 8;
+  tmplCfg.fAmpCutADC = 5.0;
+  tmplCfg.fFitMargin = 5;
+  tmplCfg.fScanHalf = 2.0;
+  tmplCfg.fMaxBaselineAbs = 8.0;
 
   SECTION("Multiple iterations on decoded data") {
 
@@ -139,12 +142,13 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
 
     // Which channel index to follow across events (-1 = all channels in
     // each event, same semantics as plot_waveforms.C cycleChannels mode).
-    const int targetChannel = 5;
+    const int targetChannel = 1;
     bool cycleChannels = (targetChannel < 0);
 
     // ── Output file ───────────────────────────────────────────────────────
     TString name = TString::Format(
-        "../root_files/decoded_analyzewithd2_chan%d_new.root", targetChannel);
+        "../root_files/wm_decoded/decoded_analyzewithd2_r%d_chan%d_new.root",
+        kRunNo, targetChannel);
     TFile outfile(name, "RECREATE");
     REQUIRE(outfile.IsOpen());
 
@@ -205,7 +209,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
           samples[s] = samps[startIdx + s];
 
         // ── Run AnalyzeWithTemplate ───────────────────────────────────
-        FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+        FADCPulseWF templateResult = analyzer.AnalyzeWithEMG(samples, tmplCfg);
 
         // ── Fill statistics histograms ────────────────────────────────
         h_nPulses.Fill(templateResult.nPulses);

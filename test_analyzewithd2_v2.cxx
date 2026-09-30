@@ -112,7 +112,7 @@ TEST_CASE("Generate Waveform Fit Plot D2 v2", "[Plotting_v2][D2_v2]") {
       std::vector<Double_t> samples(rawWaveform.begin(), rawWaveform.end());
       const TruthPulseInfo &wfInfo = gen.getTruthInfo();
 
-      FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+      FADCPulseWF templateResult = analyzer.AnalyzeWithEMG(samples, tmplCfg);
 
       // ── Validate results ──────────────────────────────────────────────
       bool run_passed = true;
