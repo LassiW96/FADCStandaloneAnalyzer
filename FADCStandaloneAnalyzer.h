@@ -55,6 +55,19 @@ struct TemplateAnalysisConfig {
   Int_t fMFLeft = 5;  // samples left of template peak in MF kernel
   Int_t fMFRight = 5; // samples right of template peak in MF kernel
 
+  // MF peak-finding window and thresholds (used by AnalyzeWithTemplate)
+  Int_t    fMFStart      = 5;     // first sample of the MF search window
+  Int_t    fMFEnd        = 250;   // last  sample of the MF search window
+  Double_t fMFThreshold  = 0.1;   // MF amplitude threshold (normalised units)
+  Int_t    fMFSeparation = 3;     // minimum distance between two MF peaks (samples)
+
+  // Stage-1 t0 scan step size (samples)
+  Double_t fScanStep     = 0.25;
+
+  // Two-stage fitting threshold (template path only)
+  // If Stage-1 chi2/ndf exceeds this, Stage-2 Minuit EMG fallback is invoked.
+  Double_t fStage2Chi2Threshold = 5.0;
+
   // Noise model
   Double_t fAdcPerMV = 4.096; // ADC counts per mV
   Double_t fMinSigma = 0.5;   // floor for per-sample sigma (ADC counts)
@@ -82,22 +95,6 @@ struct TemplateAnalysisConfig {
   Double_t fMaxBaselineFrac = 0.3; // reject if |baseline| > frac * amplitude
   Double_t fMaxBaselineAbs = 5.0;  // absolute cap on baseline (ADC)
 
-  // Second-derivative peak finder
-  // Gaussian pre-smoothing kernel half-width (samples).
-  Int_t fSmoothHalfWidth = 3;
-
-  // Significance level for the auto-scaled d2 threshold.
-  // The threshold is computed as fD2ThresholdNSigma * sigma_d2, where sigma_d2
-  // is the RMS of the second derivative in the pedestal region.
-  Double_t fD2ThresholdNSigma = 5.0;
-
-  Int_t fD2MinPeakSep = 3;
-};
-
-struct D2Cluster {
-  Int_t roiStart; // first sample index of the ROI
-  Int_t roiEnd;   // last  sample index of the ROI
-  Int_t nPulses;  // number of d2 minima (= pulse candidates) in this cluster
 };
 
 // FADC Template (kernel for Matched Filter or raw calibration reference)
@@ -118,6 +115,21 @@ struct FADCTemplate {
   static FADCTemplate fromRawSamples(const std::vector<Double_t> &rawShape,
                                      Bool_t enable = kTRUE, Int_t mfLeft = 5,
                                      Int_t mfRight = 5);
+
+  // Build template from a waveform sample vector. This is the primary factory
+  // for template-based analysis: pass in a clean single-pulse waveform
+  // (e.g. averaged calibration pulse), and it handles pedestal subtraction,
+  // normalisation, and MF kernel construction.
+  static FADCTemplate fromWaveformSamples(const std::vector<Double_t> &samples,
+                                          Int_t nPedSamples = 4,
+                                          Int_t mfLeft = 5,
+                                          Int_t mfRight = 5);
+
+  // Convenience overload accepting Int_t samples (from digitizer/waveformGenerator)
+  static FADCTemplate fromWaveformSamples(const std::vector<Int_t> &samples,
+                                          Int_t nPedSamples = 4,
+                                          Int_t mfLeft = 5,
+                                          Int_t mfRight = 5);
 
   // Sub-sample evaluation via linear interpolation.
   // Returns 0 for t outside [0, shape.size()-2].
@@ -141,9 +153,6 @@ struct FitPulseResult {
   Double_t fittedTau;   // fitted exponential tau in sample units
   Int_t fitStage;       // fit stage indicator (2 = EMG Minuit fit)
   Bool_t valid;         // kFALSE if rejected (A < fAmpCutADC, det~0, etc.)
-  Int_t clusterID = -1; // -1 if non-cluster; >=0 for D2 cluster index
-  Int_t nPulsesInCluster =
-      1; // how many pulses share this cluster (1 = isolated)
 };
 
 struct FADCPulseWF {
@@ -154,11 +163,7 @@ struct FADCPulseWF {
 
   // Diagnostics
   std::vector<Double_t> wfPS;
-  std::vector<Double_t>
-      wfSmooth; // smoothed trace (for diagnostics / intermediate steps)
   std::vector<Double_t> mfOut;
-  std::vector<Double_t> d2Out;     // second-derivative trace (empty if non-D2)
-  std::vector<D2Cluster> clusters; // D2 cluster info
 };
 
 class FADCStandaloneAnalyzer {
@@ -180,20 +185,16 @@ public:
       const std::vector<Double_t> &wfPS, const FADCTemplate &tmpl,
       const TemplateAnalysisConfig &cfg = TemplateAnalysisConfig{});
 
-  static std::vector<Double_t> gaussianSmooth(const std::vector<Double_t> &wf,
-                                              Int_t halfWidth);
-
-  static std::vector<Double_t>
-  computeSecondDerivative(const std::vector<Double_t> &wfPS,
-                          Int_t smoothHalfWidth = 3);
-
   // Main analysis functions
   FADCPulse Analyze(const std::vector<Double_t> &samples, Double_t gain,
                     Double_t tcal) const;
 
-  // Second-derivative based analysis — fully template-free.
-  FADCPulseWF AnalyzeWithD2(
+  // Template-based analysis using an empirical pulse shape.
+  // Uses matched-filter peak finding + closed-form analytical LLS fitting.
+  // Build the template via FADCTemplate::fromWaveformSamples() or fromRawSamples().
+  FADCPulseWF AnalyzeWithTemplate(
       const std::vector<Double_t> &samples,
+      const FADCTemplate &tmpl,
       const TemplateAnalysisConfig &cfg = TemplateAnalysisConfig{}) const;
 
 private:
