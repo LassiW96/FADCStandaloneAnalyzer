@@ -455,7 +455,26 @@ static FitPulseResult fitStage1Template(
   Int_t N = static_cast<Int_t>(wfResidual.size());
   fitLo = std::max(fitLo, 0);
   fitHi = std::min(fitHi, N - 1);
+  if (fitHi < fitLo) fitHi = fitLo;  // guard: ensure non-negative window
   Int_t nPts = fitHi - fitLo + 1;
+
+  // Need at least 3 points for a meaningful 2-parameter fit
+  if (nPts < 3) {
+    FitPulseResult bad;
+    bad.valid = kFALSE;
+    bad.chi2ndf = std::numeric_limits<Double_t>::max();
+    bad.chi2ndf_s1 = std::numeric_limits<Double_t>::max();
+    bad.timeSample = candidateBin;
+    bad.timeHalfMax = candidateBin;
+    bad.amplitude = 0.0;
+    bad.integral = 0.0;
+    bad.baseline = 0.0;
+    bad.mfAmplitude = 0.0;
+    bad.fitStage = 1;
+    bad.fittedSigma = 0.0;
+    bad.fittedTau = 0.0;
+    return bad;
+  }
 
   // Precompute invSigma2 and Sy2 outside the t0 scan loop
   std::vector<Double_t> invSigma2(nPts);

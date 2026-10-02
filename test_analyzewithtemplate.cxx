@@ -25,31 +25,69 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
   daq.max_n_pulses = 1;
 
   WaveformParams wf;
-  wf.sigma_g = 6;
-  wf.tau = 20;
+  wf.sigma_g = 2.6;
+  wf.tau = 7;
   wf.mean_gain = 10.0;
 
   // Secondary pulse
-  wf.sp_enable = true;
+  wf.sp_enable = false;
   wf.sp_delay = 65.0;
   wf.sp_amplitude_frac = 0.5;
 
   gen.setDigitizerParams(daq);
   gen.setDetectorParams(wf);
 
+  // ── Generate a clean (noiseless) template waveform ────────────────────────
+  // Build the template analytically from WaveformUtil::spePulse using the same
+  // sigma_g and tau as the detector model.  The pulse is placed at a known t0
+  // (20 ns, after the 4-sample pedestal window) so the template baseline is 0
+  // and peakBin is deterministic.
+  const Int_t tmplNSamples = 50;   // compact template window
+  const Double_t tmplT0_ns = 20.0; // pulse onset at 20 ns (after 16 ns pedestal window)
+  const Int_t tmplNPed = daq.init_ped_samples;
+
+  // Evaluate the EMG pulse at each sample; find the raw peak for normalisation
+  std::vector<Double_t> tmplAnalog(tmplNSamples, 0.0);
+  Double_t rawPeak = 0.0;
+  for (Int_t i = 0; i < tmplNSamples; ++i) {
+    Double_t t = i * daq.sample_rate; // time in ns
+    tmplAnalog[i] = WaveformUtil::spePulse(t, tmplT0_ns, wf.sigma_g, wf.tau);
+    if (tmplAnalog[i] > rawPeak)
+      rawPeak = tmplAnalog[i];
+  }
+
+  // Scale to the mean_gain amplitude and add the pedestal, then digitise
+  std::vector<Double_t> cleanWaveform(tmplNSamples);
+  for (Int_t i = 0; i < tmplNSamples; ++i) {
+    Double_t amplitude_mV =
+        (rawPeak > 1e-12) ? wf.mean_gain * tmplAnalog[i] / rawPeak : 0.0;
+    cleanWaveform[i] = std::round(amplitude_mV / daq.v_lsb + daq.pedestal);
+  }
+
+  FADCTemplate tmpl =
+      FADCTemplate::fromWaveformSamples(cleanWaveform, tmplNPed,
+                                        /* mfLeft */ 5, /* mfRight */ 5);
+
+  // Verify the template was built successfully
+  REQUIRE(!tmpl.shape.empty());
+  REQUIRE(tmpl.peakBin >= 0);
+
   FADCStandaloneAnalyzer analyzer;
   FADCConfig config = {4, 50, 2, 5, 2, 12}; // Match standard params
   analyzer.setConfig(config);
 
   TemplateAnalysisConfig tmplCfg;
-  // D2 specific configurations
-  tmplCfg.fSmoothHalfWidth = 2; // Gaussian pre-smoothing kernel half-width
-  tmplCfg.fD2ThresholdNSigma =
-      5.0; // Significance level for the auto-scaled d2 threshold
-  tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
+  // Template / matched-filter specific configurations
+  tmplCfg.fMFLeft = 5;                  // MF kernel half-width left
+  tmplCfg.fMFRight = 5;                 // MF kernel half-width right
+  tmplCfg.fMFStart = 1;                 // first sample of MF search window (include early pulses)
+  tmplCfg.fMFEnd = daq.num_samples - 1; // last sample of MF search window
+  tmplCfg.fMFThreshold = 3.0 * daq.noise_sigma; // 3-sigma noise threshold
+  tmplCfg.fMFSeparation = 3;            // minimum distance between MF peaks
   tmplCfg.fAmpCutADC = 8.0;
-  tmplCfg.fFitMargin = 5;
+  tmplCfg.fFitMargin = 6;
   tmplCfg.fScanHalf = 15.0;
+  tmplCfg.fRefitMaxIter = 3;
 
   SECTION("Multiple iterations") {
     const int num_wfs = 1000;
@@ -64,11 +102,11 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
     TString name;
     if (wf.sp_enable) {
       name = TString::Format(
-          "../root_files/"
+          "../root_files/template_an_test1/"
           "test_waveform_fits_pileup_delay_%g_noise_%g_updated.root",
           wf.sp_delay, daq.noise_sigma);
     } else {
-      name = TString::Format("../root_files/"
+      name = TString::Format("../root_files/template_an_test1/"
                              "test_waveform_fits_noise_%g_updated.root",
                              daq.noise_sigma);
     }
@@ -92,7 +130,8 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
       FADCPulse standardResult = analyzer.Analyze(samples, 1.0, 0.0);
       const TruthPulseInfo &wfInfo = gen.getTruthInfo();
 
-      FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+      FADCPulseWF templateResult =
+          analyzer.AnalyzeWithTemplate(samples, tmpl, tmplCfg);
 
       // ── Validate results ──────────────────────────────────────────────
       bool run_passed = true;
@@ -158,37 +197,26 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
         gSamples->SetMarkerSize(0.5);
         gSamples->SetMarkerColor(kBlue);
 
-        TF1 fTotal(
-            "fTotal",
-            [templateResult](double *x, double * /*p*/) {
-              double t = x[0];
-              double val = templateResult.pedestal;
-              for (const auto &pulse : templateResult.pulses) {
-                if (pulse.valid) {
-                  // D2 path always uses the fitted EMG model (Stage 2)
-                  double dt = t - pulse.timeSample;
-                  double sigma = pulse.fittedSigma;
-                  double tau = pulse.fittedTau;
-                  if (sigma > 0 && tau > 0) {
-                    double s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
-                    double erf_arg =
-                        (dt - sigma * sigma / tau) / (sigma * std::sqrt(2.0));
-                    double raw =
-                        std::exp(s2_2t2 - dt / tau) * (1.0 + std::erf(erf_arg));
-                    // Normalize so peak = 1, then scale by fitted amplitude
-                    double dt_peak = sigma * sigma / tau;
-                    double raw_peak = std::exp(s2_2t2 - dt_peak / tau) *
-                                      (1.0 + std::erf(0.0));
-                    if (raw_peak > 1e-12)
-                      val += pulse.amplitude * raw / raw_peak;
-                  }
-                }
-              }
-              return val;
-            },
-            -0.5, N - 0.5, 0);
+        // Build fit graph using stage-aware model evaluation
+        auto evalPulseModel = [&](Double_t t, const FitPulseResult &pulse) -> Double_t {
+          if (!pulse.valid) return 0.0;
+          if (pulse.fitStage == 1 || pulse.fittedSigma == 0.0) {
+            return pulse.amplitude * tmpl.eval(t - pulse.timeSample);
+          } else {
+            Double_t dt = t - pulse.timeSample;
+            Double_t sigma = pulse.fittedSigma;
+            Double_t tau = pulse.fittedTau;
+            if (sigma <= 0.0 || tau <= 0.0) return 0.0;
+            Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
+            Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+            if (erf_arg > 700.0) return 0.0;
+            Double_t f = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
+            Double_t dt_peak = (sigma * sigma) / tau;
+            Double_t f_peak = std::exp(s2_2t2 - (dt_peak / tau)) * (1.0 + std::erf(0.0));
+            return (f_peak > 1e-12 && f > 1e-12) ? (pulse.amplitude * f / f_peak) : 0.0;
+          }
+        };
 
-        // Build fit graph at 0.25-sample steps
         const double fitStep = 0.25;
         const double fitXMin = -0.5;
         const double fitXMax = N - 0.5;
@@ -196,7 +224,11 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
         TGraph *gFit = new TGraph(nFitPts);
         for (int k = 0; k < nFitPts; ++k) {
           double xv = fitXMin + k * fitStep;
-          gFit->SetPoint(k, xv, fTotal.Eval(xv));
+          double val = templateResult.pedestal;
+          for (const auto &pulse : templateResult.pulses) {
+            val += evalPulseModel(xv, pulse);
+          }
+          gFit->SetPoint(k, xv, val);
         }
         gFit->SetLineColor(kRed);
         gFit->SetLineWidth(1);

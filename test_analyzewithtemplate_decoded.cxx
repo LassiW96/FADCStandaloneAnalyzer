@@ -29,10 +29,10 @@
  * Compile & run (from the test1/ directory):
  *   g++ -std=c++17 test_main.cxx test_analyzewithtemplate_decoded.cxx \
  *       FADCStandaloneAnalyzer.cxx waveformGenerator.cxx \
- *       -lCatch2Main -lCatch2 $(root-config --cflags --libs) \
- *       -o run_tests_anwithtemp_decoded && ./run_tests_anwithtemp_decoded
+ *       -lCatch2Main -lCatch2 $(root-config --cflags --libs) -lMinuit2 \
+ *       -o run_decoded_template && ./run_decoded_template
  *
- * Output: decoded_analyzewithtemplate.root
+ * Output: ../root_files/decoded_analyzewithtemplate_chan5.root
  */
 
 #include <algorithm>
@@ -63,6 +63,7 @@
 #include <TMultiGraph.h>
 #include <TROOT.h>
 #include <TString.h>
+#include <TSystem.h>
 #include <TTree.h>
 
 // ── Decoded data file
@@ -114,21 +115,43 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
   T->SetBranchAddress("moller.scint.samps_elemID", samps_elemID);
 
   // ── 3.  Template & analysis configuration ────────────────────────────────
-  //        Mirrors the settings in test_analyzewithtemplate.cxx.
-  //        Adjust tau_r / tau_f to the real detector pulse shape if known.
+  // Construct a 4-sample rising and 10-sample lowering pulse template
+  const int nRise = 3;
+  const int nFall = 8;
+  std::vector<Double_t> rawShape;
+  rawShape.reserve(nRise + nFall + 1);
+
+  // 4 samples rising to peak (0.0 to 1.0)
+  for (int i = 0; i <= nRise; ++i) {
+    rawShape.push_back(static_cast<Double_t>(i) / nRise);
+  }
+  // 10 samples lowering from peak to zero (1.0 to 0.0)
+  for (int i = 1; i <= nFall; ++i) {
+    rawShape.push_back(1.0 - static_cast<Double_t>(i) / nFall);
+  }
+
+  // Create template using fromRawSamples:
+  // peak is at index 4 (tmpl.peakBin = 4)
+  // mfLeft = 4 (covers the 4-sample rising edge), mfRight = 5
+  FADCTemplate tmpl = FADCTemplate::fromRawSamples(
+      rawShape, kTRUE, /* mfLeft */ 4, /* mfRight */ 5);
+  REQUIRE(!tmpl.shape.empty());
+  REQUIRE(tmpl.peakBin >= 0);
 
   FADCStandaloneAnalyzer analyzer;
   FADCConfig config = {4, 50, 2, 5, 2, 12};
   analyzer.setConfig(config);
 
   TemplateAnalysisConfig tmplCfg;
-  // D2 specific configurations
-  tmplCfg.fSmoothHalfWidth = 2; // Gaussian pre-smoothing kernel half-width
-  tmplCfg.fD2ThresholdNSigma =
-      5.0; // Significance level for the auto-scaled d2 threshold
-  tmplCfg.fD2MinPeakSep = 1; // Minimum separation between pulse candidates
-  tmplCfg.fAmpCutADC = 8.0;
-  tmplCfg.fFitMargin = 8;
+  tmplCfg.fMFLeft = 4;         // samples left of peak in MF kernel
+  tmplCfg.fMFRight = 5;        // samples right of peak in MF kernel
+  tmplCfg.fMFStart = 1;        // first sample of search window
+  tmplCfg.fMFThreshold = 10.0; // MF amplitude threshold (ADC counts)
+  tmplCfg.fMFSeparation = 4;   // min separation between pulse candidates
+  tmplCfg.fAmpCutADC = 8.0;    // amplitude cut
+  tmplCfg.fFitMargin = 10;     // fit window margin around peak
+  tmplCfg.fScanHalf = 15.0;    // scan range
+  tmplCfg.fRefitMaxIter = 3;   // iterative refitting
 
   SECTION("Multiple iterations on decoded data") {
 
@@ -143,8 +166,10 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
     bool cycleChannels = (targetChannel < 0);
 
     // ── Output file ───────────────────────────────────────────────────────
-    TString name = TString::Format(
-        "../root_files/decoded_analyzewithd2_chan%d_new.root", targetChannel);
+    gSystem->mkdir("../root_files/wm_decoded/template_an", kTRUE);
+    TString name = TString::Format("../root_files/wm_decoded/template_an/"
+                                   "decoded_analyzewithtemplate_chan%d.root",
+                                   targetChannel);
     TFile outfile(name, "RECREATE");
     REQUIRE(outfile.IsOpen());
 
@@ -205,7 +230,9 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
           samples[s] = samps[startIdx + s];
 
         // ── Run AnalyzeWithTemplate ───────────────────────────────────
-        FADCPulseWF templateResult = analyzer.AnalyzeWithD2(samples, tmplCfg);
+        tmplCfg.fMFEnd = static_cast<Int_t>(samples.size()) - 1;
+        FADCPulseWF templateResult =
+            analyzer.AnalyzeWithTemplate(samples, tmpl, tmplCfg);
 
         // ── Fill statistics histograms ────────────────────────────────
         h_nPulses.Fill(templateResult.nPulses);
@@ -235,39 +262,38 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
           for (Int_t j = 0; j < N; ++j)
             gSamples->SetPoint(j, (double)j, samples[j]);
           gSamples->SetMarkerStyle(20);
-          gSamples->SetMarkerSize(1);
+          gSamples->SetMarkerSize(0.8);
           gSamples->SetMarkerColor(kBlue + 1);
           gSamples->SetLineColor(kBlue + 1);
 
-          TF1 fTotal(
-              "fTotal",
-              [templateResult](double *x, double * /*p*/) {
-                double t = x[0];
-                double val = templateResult.pedestal;
-                for (const auto &pulse : templateResult.pulses) {
-                  if (pulse.valid) {
-                    // D2 path always uses the fitted EMG model (Stage 2)
-                    double dt = t - pulse.timeSample;
-                    double sigma = pulse.fittedSigma;
-                    double tau = pulse.fittedTau;
-                    if (sigma > 0 && tau > 0) {
-                      double s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
-                      double erf_arg =
-                          (dt - sigma * sigma / tau) / (sigma * std::sqrt(2.0));
-                      double raw = std::exp(s2_2t2 - dt / tau) *
-                                   (1.0 + std::erf(erf_arg));
-                      // Normalize so peak = 1, then scale by fitted amplitude
-                      double dt_peak = sigma * sigma / tau;
-                      double raw_peak = std::exp(s2_2t2 - dt_peak / tau) *
-                                        (1.0 + std::erf(0.0));
-                      if (raw_peak > 1e-12)
-                        val += pulse.amplitude * raw / raw_peak;
-                    }
-                  }
-                }
-                return val;
-              },
-              0.0, static_cast<double>(N - 1), 0);
+          // Build fit graph using stage-aware model evaluation
+          auto evalPulseModel = [&](Double_t t,
+                                    const FitPulseResult &pulse) -> Double_t {
+            if (!pulse.valid)
+              return 0.0;
+            if (pulse.fitStage == 1 || pulse.fittedSigma == 0.0) {
+              return pulse.amplitude * tmpl.eval(t - pulse.timeSample);
+            } else {
+              Double_t dt = t - pulse.timeSample;
+              Double_t sigma = pulse.fittedSigma;
+              Double_t tau = pulse.fittedTau;
+              if (sigma <= 0.0 || tau <= 0.0)
+                return 0.0;
+              Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
+              Double_t erf_arg =
+                  (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+              if (erf_arg > 700.0)
+                return 0.0;
+              Double_t f =
+                  std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
+              Double_t dt_peak = (sigma * sigma) / tau;
+              Double_t f_peak =
+                  std::exp(s2_2t2 - (dt_peak / tau)) * (1.0 + std::erf(0.0));
+              return (f_peak > 1e-12 && f > 1e-12)
+                         ? (pulse.amplitude * f / f_peak)
+                         : 0.0;
+            }
+          };
 
           // Build fit graph at 0.25-sample steps
           const double fitStep = 0.25;
@@ -277,7 +303,11 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
           TGraph *gFit = new TGraph(nFitPts);
           for (int k = 0; k < nFitPts; ++k) {
             double xv = fitXMin + k * fitStep;
-            gFit->SetPoint(k, xv, fTotal.Eval(xv));
+            double val = templateResult.pedestal;
+            for (const auto &pulse : templateResult.pulses) {
+              val += evalPulseModel(xv, pulse);
+            }
+            gFit->SetPoint(k, xv, val);
           }
           gFit->SetName(Form("fit_ev%lld_ch%d", iev, elemID));
           gFit->SetLineColor(kRed);
@@ -289,7 +319,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
           mg->SetTitle(Form("Template Fit  ev %lld  ch %d;Sample;ADC counts",
                             iev, elemID));
           mg->Add(gSamples, "P");
-          mg->Add(gFit, "PL");
+          mg->Add(gFit, "L");
           mg->Write();
         }
 
@@ -324,8 +354,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
     std::cout << "Waveforms With No Pulse   : " << zeroCount << "\n";
     std::cout << "Pulse-Finding Efficiency  : " << std::fixed
               << std::setprecision(2) << frac_with_pulse << "%\n";
-    std::cout
-        << "Output File               : decoded_analyzewithtemplate.root\n";
+    std::cout << "Output File               : " << name.Data() << "\n";
     std::cout << "======================================================\n\n";
 
     // Basic sanity check: we should have processed at least one waveform
