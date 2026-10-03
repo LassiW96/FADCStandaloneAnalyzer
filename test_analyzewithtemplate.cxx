@@ -42,8 +42,9 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
   // sigma_g and tau as the detector model.  The pulse is placed at a known t0
   // (20 ns, after the 4-sample pedestal window) so the template baseline is 0
   // and peakBin is deterministic.
-  const Int_t tmplNSamples = 50;   // compact template window
-  const Double_t tmplT0_ns = 20.0; // pulse onset at 20 ns (after 16 ns pedestal window)
+  const Int_t tmplNSamples = 50; // compact template window
+  const Double_t tmplT0_ns =
+      20.0; // pulse onset at 20 ns (after 16 ns pedestal window)
   const Int_t tmplNPed = daq.init_ped_samples;
 
   // Evaluate the EMG pulse at each sample; find the raw peak for normalisation
@@ -78,12 +79,13 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
 
   TemplateAnalysisConfig tmplCfg;
   // Template / matched-filter specific configurations
-  tmplCfg.fMFLeft = 5;                  // MF kernel half-width left
-  tmplCfg.fMFRight = 5;                 // MF kernel half-width right
-  tmplCfg.fMFStart = 1;                 // first sample of MF search window (include early pulses)
+  tmplCfg.fMFLeft = 5;  // MF kernel half-width left
+  tmplCfg.fMFRight = 5; // MF kernel half-width right
+  tmplCfg.fMFStart =
+      1; // first sample of MF search window (include early pulses)
   tmplCfg.fMFEnd = daq.num_samples - 1; // last sample of MF search window
   tmplCfg.fMFThreshold = 3.0 * daq.noise_sigma; // 3-sigma noise threshold
-  tmplCfg.fMFSeparation = 3;            // minimum distance between MF peaks
+  tmplCfg.fMFSeparation = 3; // minimum distance between MF peaks
   tmplCfg.fAmpCutADC = 8.0;
   tmplCfg.fFitMargin = 6;
   tmplCfg.fScanHalf = 15.0;
@@ -198,22 +200,31 @@ TEST_CASE("Generate Waveform Fit Plot", "[Plotting]") {
         gSamples->SetMarkerColor(kBlue);
 
         // Build fit graph using stage-aware model evaluation
-        auto evalPulseModel = [&](Double_t t, const FitPulseResult &pulse) -> Double_t {
-          if (!pulse.valid) return 0.0;
+        auto evalPulseModel = [&](Double_t t,
+                                  const FitPulseResult &pulse) -> Double_t {
+          if (!pulse.valid)
+            return 0.0;
           if (pulse.fitStage == 1 || pulse.fittedSigma == 0.0) {
             return pulse.amplitude * tmpl.eval(t - pulse.timeSample);
           } else {
             Double_t dt = t - pulse.timeSample;
             Double_t sigma = pulse.fittedSigma;
             Double_t tau = pulse.fittedTau;
-            if (sigma <= 0.0 || tau <= 0.0) return 0.0;
+            if (sigma <= 0.0 || tau <= 0.0)
+              return 0.0;
             Double_t s2_2t2 = (sigma * sigma) / (2.0 * tau * tau);
-            Double_t erf_arg = (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
-            if (erf_arg > 700.0) return 0.0;
-            Double_t f = std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
+            Double_t erf_arg =
+                (dt - (sigma * sigma) / tau) / (sigma * std::sqrt(2.0));
+            if (erf_arg > 700.0)
+              return 0.0;
+            Double_t f =
+                std::exp(s2_2t2 - (dt / tau)) * (1.0 + std::erf(erf_arg));
             Double_t dt_peak = (sigma * sigma) / tau;
-            Double_t f_peak = std::exp(s2_2t2 - (dt_peak / tau)) * (1.0 + std::erf(0.0));
-            return (f_peak > 1e-12 && f > 1e-12) ? (pulse.amplitude * f / f_peak) : 0.0;
+            Double_t f_peak =
+                std::exp(s2_2t2 - (dt_peak / tau)) * (1.0 + std::erf(0.0));
+            return (f_peak > 1e-12 && f > 1e-12)
+                       ? (pulse.amplitude * f / f_peak)
+                       : 0.0;
           }
         };
 

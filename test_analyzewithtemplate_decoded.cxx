@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -115,26 +116,33 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
   T->SetBranchAddress("moller.scint.samps_elemID", samps_elemID);
 
   // ── 3.  Template & analysis configuration ────────────────────────────────
-  // Construct a 4-sample rising and 10-sample lowering pulse template
-  const int nRise = 3;
-  const int nFall = 8;
-  std::vector<Double_t> rawShape;
-  rawShape.reserve(nRise + nFall + 1);
+  // Load smoothed template from file (74 samples, peak at sample 10)
+  const std::string tmplFile = "Smoothed_template.txt";
+  std::ifstream tmplStream(tmplFile);
+  REQUIRE(tmplStream.is_open());
 
-  // 4 samples rising to peak (0.0 to 1.0)
-  for (int i = 0; i <= nRise; ++i) {
-    rawShape.push_back(static_cast<Double_t>(i) / nRise);
+  std::vector<Double_t> tmplSamples;
+  {
+    std::string line;
+    while (std::getline(tmplStream, line)) {
+      // Format: " sample[ N]     value"
+      auto openBracket = line.find('[');
+      auto closeBracket = line.find(']');
+      if (openBracket == std::string::npos || closeBracket == std::string::npos)
+        continue;
+      int idx = std::stoi(
+          line.substr(openBracket + 1, closeBracket - openBracket - 1));
+      double val = std::stod(line.substr(closeBracket + 1));
+      if (idx >= static_cast<int>(tmplSamples.size()))
+        tmplSamples.resize(idx + 1, 0.0);
+      tmplSamples[idx] = val;
+    }
   }
-  // 10 samples lowering from peak to zero (1.0 to 0.0)
-  for (int i = 1; i <= nFall; ++i) {
-    rawShape.push_back(1.0 - static_cast<Double_t>(i) / nFall);
-  }
+  REQUIRE(tmplSamples.size() > 2);
 
-  // Create template using fromRawSamples:
-  // peak is at index 4 (tmpl.peakBin = 4)
-  // mfLeft = 4 (covers the 4-sample rising edge), mfRight = 5
-  FADCTemplate tmpl = FADCTemplate::fromRawSamples(
-      rawShape, kTRUE, /* mfLeft */ 4, /* mfRight */ 5);
+  // nPedSamples = 6: samples 0–5 are baseline in the smoothed template
+  FADCTemplate tmpl = FADCTemplate::fromWaveformSamples(
+      tmplSamples, /* nPedSamples */ 6, /* mfLeft */ 5, /* mfRight */ 5);
   REQUIRE(!tmpl.shape.empty());
   REQUIRE(tmpl.peakBin >= 0);
 
@@ -143,7 +151,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
   analyzer.setConfig(config);
 
   TemplateAnalysisConfig tmplCfg;
-  tmplCfg.fMFLeft = 4;         // samples left of peak in MF kernel
+  tmplCfg.fMFLeft = 5;         // samples left of peak in MF kernel
   tmplCfg.fMFRight = 5;        // samples right of peak in MF kernel
   tmplCfg.fMFStart = 1;        // first sample of search window
   tmplCfg.fMFThreshold = 10.0; // MF amplitude threshold (ADC counts)
@@ -162,7 +170,7 @@ TEST_CASE("AnalyzeWithTemplate on Decoded FADC Data",
 
     // Which channel index to follow across events (-1 = all channels in
     // each event, same semantics as plot_waveforms.C cycleChannels mode).
-    const int targetChannel = 5;
+    const int targetChannel = 1;
     bool cycleChannels = (targetChannel < 0);
 
     // ── Output file ───────────────────────────────────────────────────────
